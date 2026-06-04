@@ -10,8 +10,8 @@ them to shareable Cloudflare Pages URLs from the terminal or your coding agent.
 Pagecast is a local-first publishing tool for agent-generated reports and small
 static web projects. It gives you a local admin UI for previewing files, managing
 published versions, renaming links, re-syncing updates, and revoking old URLs.
-For automation, it also exposes a headless `pagecast publish` command and Codex /
-Claude agent skills.
+For automation, it exposes headless `pagecast publish` commands, a small
+Cloudflare Pages CLI abstraction, and Codex / Claude agent skills.
 
 Good fits:
 
@@ -71,15 +71,25 @@ Open the Cloudflare Pages panel and click **Connect Cloudflare**. Pagecast uses
 scoped Wrangler OAuth (`account:read`, `user:read`, `pages:write`), detects your
 account, and creates the Pages project if needed.
 
+Or do the same setup from the terminal:
+
+```sh
+npx pagecast pages setup --project pagecast
+```
+
 If you prefer a token for automation, create a scoped Cloudflare API token with
 Account > Cloudflare Pages > Edit permission, then run:
 
 ```sh
-CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... npx pagecast
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... npx pagecast pages status --json
 ```
 
 If more than one Cloudflare account is available, Pagecast asks you to choose the
-account once in the admin UI.
+account once in the admin UI, or you can pass it directly:
+
+```sh
+npx pagecast pages setup --account 90e4c638bea527f464ec6fa7caebfd4e --project pagecast
+```
 
 ## Publish From The Terminal
 
@@ -96,16 +106,43 @@ Publish Markdown:
 npx pagecast publish "/absolute/path/report.md" --json
 ```
 
-Publish a static web project by building first, then publishing the generated
-entry file:
+Publish a static web project as a shareable snapshot by building first, then
+publishing the generated entry file:
 
 ```sh
 npm run build
 npx pagecast publish "$(pwd)/dist/index.html" --json
 ```
 
-The headless CLI publishes files. For source-folder build settings, folder
-publishing, link renaming, re-sync, and revoke controls, use the app:
+This creates a `/p/<token>/` link and stages sibling assets from the build
+folder.
+
+Deploy a whole static folder directly to a named Cloudflare Pages project:
+
+```sh
+npx pagecast publish site "$(pwd)/dist" --project pagecasthq --branch main --json
+```
+
+`--branch` is optional. If you omit it, Pagecast deploys to `main`:
+
+```sh
+npx pagecast pages deploy "$(pwd)/dist" --project pagecasthq --json
+```
+
+That command is the Pagecast abstraction over raw Wrangler deploys. It replaces:
+
+```sh
+CLOUDFLARE_ACCOUNT_ID=90e4c638bea527f464ec6fa7caebfd4e npx wrangler pages deploy /private/tmp/pagecasthq-deploy --project-name pagecasthq --branch main
+```
+
+with:
+
+```sh
+npx pagecast pages deploy /private/tmp/pagecasthq-deploy --project pagecasthq --branch main --json
+```
+
+Direct site deploys replace the target Pages project contents. For source-folder
+build settings, link renaming, re-sync, and revoke controls, use the app:
 
 ```sh
 npx pagecast
@@ -113,10 +150,25 @@ npx pagecast
 
 Common headless errors:
 
-- `{"ok":false,"statusCode":401}`: run `npx pagecast` once and connect
-  Cloudflare.
-- `{"ok":false,"statusCode":409}`: run `npx pagecast` once and choose the
-  Cloudflare account.
+- `{"ok":false,"statusCode":401}`: run `npx pagecast pages setup` once, or run
+  `npx pagecast` and connect Cloudflare.
+- `{"ok":false,"statusCode":409}`: pass `--account <account-id>`, or run
+  `npx pagecast` once and choose the Cloudflare account.
+
+## Cloudflare Pages Commands
+
+Pagecast wraps the Wrangler commands needed for normal Pages publishing:
+
+```sh
+npx pagecast pages setup --project pagecast --json
+npx pagecast pages status --json
+npx pagecast pages projects list --json
+npx pagecast pages deploy "/absolute/path/dist" --project pagecasthq --branch main --json
+npx pagecast pages deploy "/absolute/path/dist" --project pagecasthq --json
+```
+
+Agents and CI should prefer `--json`. Human terminal output stays concise by
+default. Direct deploys use `main` when `--branch` is not provided.
 
 ## Use From Codex And Other Agents
 
@@ -220,6 +272,7 @@ public/                      Built admin UI served by the package
 web/                         Vite + React source for the admin UI
 plugin/                      Claude/portable Agent-Skills integration
 .codex/skills/publish-report/ Codex-native Pagecast skill
+llms.txt                     Agent-readable command and workflow map
 test/                        Node test suite
 ```
 
@@ -234,8 +287,8 @@ npm test
 npm pack --dry-run
 ```
 
-The npm package includes `src/`, `public/`, `plugin/`, and the Codex skill under
-`.codex/skills/publish-report/`.
+The npm package includes `src/`, `public/`, `plugin/`, `llms.txt`, and the Codex
+skill under `.codex/skills/publish-report/`.
 
 ## Security Model
 

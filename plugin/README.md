@@ -61,7 +61,7 @@ npx pagecast
 Click **Connect Cloudflare** in the panel. Or sign in directly:
 
 ```sh
-npx wrangler login --scopes account:read --scopes user:read --scopes pages:write
+npx pagecast pages setup --project pagecast
 ```
 
 That's the whole setup. **After this, publishing is headless** — when your agent
@@ -75,9 +75,23 @@ Say **yes** and you get back a public `pagecast.pages.dev` link you own. Say no 
 it drops it — it won't nag. You can rename, re-sync, or revoke any link from
 `npx pagecast`.
 
-For static web projects, build first and publish the generated entry file, such
-as `dist/index.html`. Use `npx pagecast` for folder publishing, source-folder
-build settings, URL renaming, re-sync, and revoke controls.
+For static web projects that should get a new share link, build first and publish
+the generated entry file, such as `dist/index.html`.
+
+For whole-site Cloudflare Pages deploys, use Pagecast's Wrangler abstraction:
+
+```sh
+npx pagecast pages deploy "/absolute/path/dist" --project pagecasthq --branch main --json
+```
+
+If you omit `--branch`, Pagecast deploys to `main`:
+
+```sh
+npx pagecast pages deploy "/absolute/path/dist" --project pagecasthq --json
+```
+
+Direct site deploys replace the target Pages project contents. Use `npx pagecast`
+for source-folder build settings, URL renaming, re-sync, and revoke controls.
 
 ## Requirements
 

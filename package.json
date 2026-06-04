@@ -34,7 +34,8 @@
     "src/",
     "public/",
     "plugin/",
-    ".codex/skills/publish-report/"
+    ".codex/skills/publish-report/",
+    "llms.txt"
   ],
   "scripts": {
     "start": "node src/cli.js",

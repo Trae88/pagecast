@@ -13,7 +13,9 @@ import {
   cloudflareCredentialStatus,
   createDeployQueue,
   createReportStore,
+  deployCloudflarePagesSite,
   extractPublicUrl,
+  listCloudflarePagesProjects,
   localHtmlPathCandidates,
   normalizeAssetRequestPath,
   normalizeLocalFolderPath,
@@ -23,6 +25,7 @@ import {
   parseWranglerWhoamiAccounts,
   parseMultipartUpload,
   publishReportSnapshot,
+  setupCloudflarePages,
   startServers
 } from "../src/server.js";
 
@@ -989,6 +992,244 @@ test("Headless publishReportSnapshot auto-provisions and returns a public URL", 
   assert.match(result.url, /^https:\/\/pagecast\.pages\.dev\/p\/.+\/$/);
   assert.equal(result.projectName, "pagecast");
   assert.ok(deployCommands.length >= 1, "expected a Pages deploy");
+});
+
+test("Headless Pages site deploy wraps Wrangler with project, branch, and account env", async () => {
+  const tempDir = await makeTempDir();
+  const dataDir = path.join(tempDir, "data");
+  const siteDir = path.join(tempDir, "site");
+  await fs.mkdir(path.join(siteDir, "assets"), { recursive: true });
+  await fs.writeFile(path.join(siteDir, "index.html"), "<h1>Site</h1>");
+  await fs.writeFile(path.join(siteDir, "assets", "app.js"), "window.ok = true;");
+  await fs.writeFile(path.join(siteDir, ".env"), "SECRET=1");
+
+  const accountId = "90e4c638bea527f464ec6fa7caebfd4e";
+  const { fakeSpawn: authSpawn } = makeWranglerFake((args) => {
+    if (args.includes("whoami")) {
+      return {
+        code: 0,
+        output: JSON.stringify({
+          accounts: [{ name: "Pagecast", id: accountId }]
+        })
+      };
+    }
+    if (args.includes("list")) {
+      return {
+        code: 0,
+        output: JSON.stringify([
+          { name: "pagecasthq", account_id: accountId, production_branch: "main" }
+        ])
+      };
+    }
+    return { code: 0, output: "" };
+  });
+
+  const deployCommands = [];
+  function fakeDeploy(command, args, options) {
+    deployCommands.push({ command, args, accountId: options.env.CLOUDFLARE_ACCOUNT_ID || "" });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => child.emit("exit", null, "SIGTERM");
+    setImmediate(() => {
+      child.stdout.emit(
+        "data",
+        Buffer.from("Deployment complete: https://7a52d6ea.pagecasthq.pages.dev")
+      );
+      child.emit("exit", 0, null);
+    });
+    return child;
+  }
+
+  const result = await deployCloudflarePagesSite({
+    sourceDir: siteDir,
+    projectName: "pagecasthq",
+    accountId,
+    branch: "main",
+    dataDir,
+    cloudflareAuthSpawnImpl: authSpawn,
+    pagesDeploySpawnImpl: fakeDeploy,
+    cloudflareListTimeoutMs: 1000,
+    pagesDeployTimeoutMs: 1000
+  });
+
+  const stagingRoot = path.join(dataDir, "pages-deploy", "pagecasthq");
+  assert.equal(result.url, "https://pagecasthq.pages.dev");
+  assert.equal(result.deploymentUrl, "https://7a52d6ea.pagecasthq.pages.dev");
+  assert.equal(result.projectName, "pagecasthq");
+  assert.equal(result.accountId, accountId);
+  assert.equal(result.branch, "main");
+  assert.deepEqual(deployCommands, [
+    {
+      command: "npx",
+      args: [
+        "--yes",
+        "wrangler",
+        "pages",
+        "deploy",
+        stagingRoot,
+        "--project-name",
+        "pagecasthq",
+        "--branch",
+        "main"
+      ],
+      accountId
+    }
+  ]);
+  assert.equal(await fs.readFile(path.join(stagingRoot, "index.html"), "utf8"), "<h1>Site</h1>");
+  assert.equal(await fs.readFile(path.join(stagingRoot, "assets", "app.js"), "utf8"), "window.ok = true;");
+  await assert.rejects(() => fs.stat(path.join(stagingRoot, ".env")), /ENOENT/);
+});
+
+test("Headless Pages site deploy defaults to the main branch when omitted", async () => {
+  const tempDir = await makeTempDir();
+  const dataDir = path.join(tempDir, "data");
+  const siteDir = path.join(tempDir, "site");
+  await fs.mkdir(siteDir, { recursive: true });
+  await fs.writeFile(path.join(siteDir, "index.html"), "<h1>No branch</h1>");
+
+  const accountId = "90e4c638bea527f464ec6fa7caebfd4e";
+  const { fakeSpawn: authSpawn } = makeWranglerFake((args) => {
+    if (args.includes("whoami")) {
+      return {
+        code: 0,
+        output: JSON.stringify({ accounts: [{ name: "Pagecast", id: accountId }] })
+      };
+    }
+    if (args.includes("list")) {
+      return {
+        code: 0,
+        output: JSON.stringify([{ name: "pagecasthq", account_id: accountId }])
+      };
+    }
+    return { code: 0, output: "" };
+  });
+
+  const deployCommands = [];
+  function fakeDeploy(command, args, options) {
+    deployCommands.push({ command, args, accountId: options.env.CLOUDFLARE_ACCOUNT_ID || "" });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => child.emit("exit", null, "SIGTERM");
+    setImmediate(() => {
+      child.stdout.emit("data", Buffer.from("Deployment complete"));
+      child.emit("exit", 0, null);
+    });
+    return child;
+  }
+
+  const result = await deployCloudflarePagesSite({
+    sourceDir: siteDir,
+    projectName: "pagecasthq",
+    accountId,
+    dataDir,
+    cloudflareAuthSpawnImpl: authSpawn,
+    pagesDeploySpawnImpl: fakeDeploy,
+    cloudflareListTimeoutMs: 1000,
+    pagesDeployTimeoutMs: 1000
+  });
+
+  assert.equal(result.branch, "main");
+  assert.deepEqual(deployCommands[0].args.slice(-2), ["--branch", "main"]);
+});
+
+test("Headless Pages setup logs in and creates the requested Pages project", async () => {
+  const tempDir = await makeTempDir();
+  const dataDir = path.join(tempDir, "data");
+  const accountId = "90e4c638bea527f464ec6fa7caebfd4e";
+  let loggedIn = false;
+  let created = false;
+
+  const { fakeSpawn, captured } = makeWranglerFake((args) => {
+    if (args.includes("login")) {
+      loggedIn = true;
+      return { code: 0, output: "Successfully logged in" };
+    }
+    if (args.includes("whoami")) {
+      return loggedIn
+        ? {
+            code: 0,
+            output: JSON.stringify({ accounts: [{ name: "Pagecast", id: accountId }] })
+          }
+        : { code: 0, output: "You are not authenticated." };
+    }
+    if (args.includes("create")) {
+      created = true;
+      return { code: 0, output: "Created pagecasthq" };
+    }
+    if (args.includes("list")) {
+      return {
+        code: 0,
+        output: created
+          ? JSON.stringify([{ name: "pagecasthq", account_id: accountId }])
+          : JSON.stringify([])
+      };
+    }
+    return { code: 0, output: "" };
+  });
+
+  const result = await setupCloudflarePages({
+    projectName: "pagecasthq",
+    accountId,
+    branch: "production",
+    dataDir,
+    cloudflareAuthSpawnImpl: fakeSpawn,
+    cloudflareListTimeoutMs: 1000
+  });
+
+  assert.equal(result.cloudflare.authenticated, true);
+  assert.equal(result.cloudflare.autoCreated, true);
+  assert.equal(result.config.pages.projectName, "pagecasthq");
+  assert.equal(result.config.pages.accountId, accountId);
+
+  const createCall = captured.find((item) => item.args.includes("create"));
+  assert.ok(createCall, "expected setup to create the requested Pages project");
+  assert.equal(createCall.accountId, accountId);
+  assert.deepEqual(createCall.args, [
+    "--yes",
+    "wrangler",
+    "pages",
+    "project",
+    "create",
+    "pagecasthq",
+    "--production-branch",
+    "production"
+  ]);
+});
+
+test("Headless Pages project list uses the selected Cloudflare account", async () => {
+  const tempDir = await makeTempDir();
+  const accountId = "90e4c638bea527f464ec6fa7caebfd4e";
+  const { fakeSpawn, captured } = makeWranglerFake((args) => {
+    if (args.includes("whoami")) {
+      return {
+        code: 0,
+        output: JSON.stringify({ accounts: [{ name: "Pagecast", id: accountId }] })
+      };
+    }
+    if (args.includes("list")) {
+      return {
+        code: 0,
+        output: JSON.stringify([
+          { name: "pagecasthq", account_id: accountId, production_branch: "main" }
+        ])
+      };
+    }
+    return { code: 0, output: "" };
+  });
+
+  const result = await listCloudflarePagesProjects({
+    accountId,
+    dataDir: path.join(tempDir, "data"),
+    cloudflareAuthSpawnImpl: fakeSpawn,
+    cloudflareListTimeoutMs: 1000
+  });
+
+  assert.equal(result.accountId, accountId);
+  assert.equal(result.projects.length, 1);
+  assert.equal(result.projects[0].name, "pagecasthq");
+  assert.equal(captured.find((item) => item.args.includes("list")).accountId, accountId);
 });
 
 test("Publish uses the REAL Cloudflare subdomain from the deploy output (name collision)", async () => {

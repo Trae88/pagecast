@@ -8,9 +8,10 @@ description: Publish finished local HTML, Markdown, or built static web projects
 ## Overview
 
 Use Pagecast to turn a finished local artifact into a shareable public URL backed
-by the user's Cloudflare Pages project. Prefer the headless CLI for files and
-built static output; use the Pagecast app when the user needs folder management,
-URL renaming, re-sync, revocation, or source-folder build settings.
+by the user's Cloudflare Pages project. Prefer `pagecast publish <file>` for
+reports, docs, and built entry files. Use `pagecast publish site <dir>` only when
+the user intentionally wants to deploy a whole static folder to a named
+Cloudflare Pages project.
 
 Never publish without explicit confirmation. Publishing makes the selected
 artifact publicly reachable.
@@ -56,7 +57,7 @@ Markdown works too:
 npx pagecast publish "/absolute/path/to/report.md" --json
 ```
 
-For a web project:
+For a web project that should get a new shareable `/p/<token>/` link:
 
 1. Run the project's existing build command, such as `npm run build`, only if the
    user expects the current project state to be published.
@@ -64,16 +65,54 @@ For a web project:
    `build/index.html`, `out/index.html`, or `public/index.html`.
 3. Publish that entry file with `npx pagecast publish "<absolute-entry-path>" --json`.
 
+If the user asks to deploy or update an entire static site/project rather than
+create a new share link, deploy the built folder directly:
+
+```sh
+npx pagecast publish site "/absolute/path/to/dist" --project "project-name" --branch main --json
+```
+
+`--branch` is optional and defaults to `main`, so this also works:
+
+```sh
+npx pagecast pages deploy "/absolute/path/to/dist" --project "project-name" --json
+```
+
+Use this instead of raw Wrangler commands like `npx wrangler pages deploy`.
+Direct site deploys replace the target Cloudflare Pages project contents, so do
+not guess the `--project`; use the user's named project or ask for it.
+
 Parse stdout as JSON:
 
 - Success: `{ "ok": true, "url": "https://<project>.pages.dev/p/<token>/", ... }`
   Return the `url` and mention that the user can rename, re-sync, or revoke it
   from `npx pagecast`.
-- `401`: the user has not connected Cloudflare. Tell them to run `npx pagecast`
-  once and click **Connect Cloudflare**, then retry if they want.
+- `401`: the user has not connected Cloudflare. Tell them to run
+  `npx pagecast pages setup` once, or run `npx pagecast` and click
+  **Connect Cloudflare**, then retry if they want.
 - `409`: multiple Cloudflare accounts are available. Tell them to run
-  `npx pagecast` once, choose the account, then retry.
+  `npx pagecast pages setup --account <account-id>` once, or run `npx pagecast`
+  and choose the account, then retry.
 - Other errors: relay the error concisely and do not claim success.
+
+## Cloudflare Pages Workflow
+
+Use these lower-level commands when the user explicitly asks about Cloudflare
+setup or project deployment:
+
+```sh
+npx pagecast pages setup --project "project-name" --json
+npx pagecast pages status --json
+npx pagecast pages projects list --json
+npx pagecast pages deploy "/absolute/path/to/dist" --project "project-name" --branch main --json
+```
+
+If the user does not specify a branch, omit `--branch`; Pagecast deploys to
+`main`.
+
+`pages deploy` is the Pagecast abstraction over `npx wrangler pages deploy`; it
+passes the account to Wrangler internally through `CLOUDFLARE_ACCOUNT_ID` when
+needed.
 
 ## App Workflow
 
@@ -94,7 +133,7 @@ The app opens at `http://127.0.0.1:4173` and supports:
 
 - From Codex CLI or desktop, run terminal commands in the user's current project
   directory so `.pagecast/` config and publish history stay with that project.
-- Always use absolute paths in `pagecast publish`.
+- Always use absolute paths in `pagecast publish` and `pagecast pages deploy`.
 - If the user asks only for a command, provide the command and any one-time setup
   note instead of running it.
 - If the user asks Codex to publish, run the command after confirmation and

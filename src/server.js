@@ -166,6 +166,22 @@ function normalizeAccountId(value) {
   return accountId;
 }
 
+function normalizePagesBranch(value = DEFAULT_PAGES_BRANCH) {
+  const branch = String(value || DEFAULT_PAGES_BRANCH).trim();
+  if (
+    !branch ||
+    branch.length > 128 ||
+    branch.startsWith("-") ||
+    branch.startsWith("/") ||
+    branch.endsWith("/") ||
+    branch.includes("..") ||
+    !/^[A-Za-z0-9._/-]+$/.test(branch)
+  ) {
+    throw appError("Cloudflare Pages branch must be a valid branch name.", 400);
+  }
+  return branch;
+}
+
 function normalizeAccountName(value) {
   const accountName = stripAnsi(value).trim();
   if (!accountName || isRedactedAccountName(accountName)) {
@@ -191,6 +207,15 @@ function pagesBaseUrlFromDeployOutput(output, projectName) {
     return `https://${match[1].toLowerCase()}`;
   }
   return pagesBaseUrl(projectName);
+}
+
+function pagesDeploymentUrlFromDeployOutput(output, fallbackUrl = "") {
+  const text = stripAnsi(output || "");
+  const match = text.match(/https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.pages\.dev(?:\/[^\s"'<>)]*)?/i);
+  if (match) {
+    return match[0].replace(/[),.;]+$/g, "");
+  }
+  return fallbackUrl;
 }
 
 function stripAnsi(value) {
@@ -409,14 +434,12 @@ export function chooseWranglerPagesProject(projects, pagesConfig = {}) {
   }
 
   const preferredName = String(pagesConfig.projectName || "").toLowerCase();
-  // Only adopt a project that is actually Pagecast's (the configured name or the
-  // default). Never hijack an unrelated existing project — when there's no match,
-  // return null so the caller auto-creates a dedicated Pages project instead.
-  return (
-    projects.find((project) => project.name === preferredName) ||
-    projects.find((project) => project.name === DEFAULT_PAGES_PROJECT_NAME) ||
-    null
-  );
+  // Only adopt a project that is actually requested. If no explicit preference
+  // is available, fall back to Pagecast's default project.
+  if (preferredName) {
+    return projects.find((project) => project.name === preferredName) || null;
+  }
+  return projects.find((project) => project.name === DEFAULT_PAGES_PROJECT_NAME) || null;
 }
 
 function normalizeAccountIdSafe(value) {
@@ -907,6 +930,7 @@ export function createCloudflarePagesPublisher({
   getRedirects = () => []
 } = {}) {
   const siteRoot = path.join(dataDir, "pages-site");
+  const deployRoot = path.join(dataDir, "pages-deploy");
 
   function publicationDir(slug) {
     return path.join(siteRoot, "p", slug);
@@ -960,21 +984,21 @@ export function createCloudflarePagesPublisher({
     await fs.rm(publicationDir(slug), { recursive: true, force: true });
   }
 
-  async function deploy(pagesConfig) {
+  async function runPagesDeploy(rootDir, pagesConfig, branch = DEFAULT_PAGES_BRANCH) {
     const projectName = normalizePagesProjectName(pagesConfig.projectName);
     const accountId = normalizeAccountId(pagesConfig.accountId || "");
-    await ensureSiteRoot();
+    const deployBranch = normalizePagesBranch(branch);
 
     const args = [
       "--yes",
       "wrangler",
       "pages",
       "deploy",
-      siteRoot,
+      rootDir,
       "--project-name",
       projectName,
       "--branch",
-      DEFAULT_PAGES_BRANCH
+      deployBranch
     ];
 
     // `wrangler pages deploy` does not accept an `--account-id` flag (it errors
@@ -997,7 +1021,36 @@ export function createCloudflarePagesPublisher({
 
     // Use the real subdomain Cloudflare actually assigned (may differ from the
     // project name on a global subdomain collision), not an assumed one.
-    return pagesBaseUrlFromDeployOutput(result.output, projectName);
+    const baseUrl = pagesBaseUrlFromDeployOutput(result.output, projectName);
+    return {
+      baseUrl,
+      deploymentUrl: pagesDeploymentUrlFromDeployOutput(result.output, baseUrl),
+      output: result.output
+    };
+  }
+
+  async function deploy(pagesConfig) {
+    await ensureSiteRoot();
+    const result = await runPagesDeploy(siteRoot, pagesConfig, DEFAULT_PAGES_BRANCH);
+    return result.baseUrl;
+  }
+
+  async function deploySite({ sourceDir, pagesConfig, branch = DEFAULT_PAGES_BRANCH } = {}) {
+    const normalizedSourceDir = await normalizeLocalFolderPath(sourceDir);
+    const projectName = normalizePagesProjectName(pagesConfig.projectName);
+    if (isPathInside(deployRoot, normalizedSourceDir)) {
+      throw appError("Cannot deploy Pagecast's internal deploy staging folder.", 400);
+    }
+    const stagingRoot = path.join(deployRoot, projectName);
+    await copyPublicTree(normalizedSourceDir, stagingRoot);
+    const result = await runPagesDeploy(stagingRoot, pagesConfig, branch);
+    return {
+      ...result,
+      sourceDir: normalizedSourceDir,
+      stagingRoot,
+      projectName,
+      branch: normalizePagesBranch(branch)
+    };
   }
 
   async function publish({ report, publication, pagesConfig }) {
@@ -1046,10 +1099,12 @@ export function createCloudflarePagesPublisher({
 
   return {
     siteRoot,
+    deployRoot,
     publish,
     syncPublication,
     renamePublication,
     revoke,
+    deploySite,
     publicationDir,
     publishSourceFor
   };
@@ -2735,10 +2790,16 @@ async function detectAndPersistCloudflareProjects({ cloudflareAuth, configStore 
 // single-account case) and ensure a publishable Pages project exists, creating
 // the default one when none is found. This is the seamless one-shot target used
 // by /api/cloudflare/connect and by snapshot self-provisioning.
-async function ensureCloudflarePagesTarget({ cloudflareAuth, configStore, autoCreate = true }) {
+async function ensureCloudflarePagesTarget({
+  cloudflareAuth,
+  configStore,
+  autoCreate = true,
+  branch = DEFAULT_PAGES_BRANCH
+}) {
   const currentConfig = configStore.get();
   const session = await cloudflareAuth.refreshSession();
   const accounts = session.accounts;
+  const productionBranch = normalizePagesBranch(branch);
 
   if (!session.loggedIn) {
     return {
@@ -2796,7 +2857,7 @@ async function ensureCloudflarePagesTarget({ cloudflareAuth, configStore, autoCr
     await cloudflareAuth.ensureProject({
       projectName,
       accountId,
-      branch: DEFAULT_PAGES_BRANCH
+      branch: productionBranch
     });
     autoCreated = true;
     projects = await cloudflareAuth.listProjects({ accountId });
@@ -2805,7 +2866,7 @@ async function ensureCloudflarePagesTarget({ cloudflareAuth, configStore, autoCr
         name: normalizePagesProjectName(projectName),
         accountId,
         accountName,
-        productionBranch: DEFAULT_PAGES_BRANCH,
+        productionBranch,
         baseUrl: pagesBaseUrl(projectName)
       };
   }
@@ -3531,6 +3592,245 @@ export async function startServers({
   };
 }
 
+async function createHeadlessCloudflareContext({
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  pagesDeploySpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS,
+  pagesDeployTimeoutMs = 180000
+} = {}) {
+  const configStore = createConfigStore({ dataDir });
+  await configStore.init();
+  const cloudflareAuth = createCloudflareAuthManager({
+    spawnImpl: cloudflareAuthSpawnImpl,
+    listTimeoutMs: cloudflareListTimeoutMs
+  });
+  const pagesPublisher = createCloudflarePagesPublisher({
+    dataDir,
+    spawnImpl: pagesDeploySpawnImpl,
+    timeoutMs: pagesDeployTimeoutMs
+  });
+  return { configStore, cloudflareAuth, pagesPublisher };
+}
+
+async function applyPagesSelection({ configStore, projectName, accountId }) {
+  const current = configStore.get();
+  const selectedProjectName = projectName ? normalizePagesProjectName(projectName) : current.pages.projectName;
+  const selectedAccountId = accountId ? normalizeAccountId(accountId) : current.pages.accountId;
+  if (projectName || accountId) {
+    await configStore.updatePages({
+      projectName: selectedProjectName,
+      accountId: selectedAccountId,
+      accountName: accountId ? "" : current.pages.accountName
+    });
+  }
+  return configStore.get();
+}
+
+function cloudflareAuthRequiredMessage() {
+  return "Not signed in to Cloudflare. Run `npx pagecast pages setup` once, then retry.";
+}
+
+async function ensureHeadlessPagesTarget({
+  configStore,
+  cloudflareAuth,
+  projectName,
+  accountId,
+  branch = DEFAULT_PAGES_BRANCH,
+  autoCreate = true,
+  loginIfNeeded = false
+} = {}) {
+  await applyPagesSelection({ configStore, projectName, accountId });
+
+  const credential = cloudflareCredentialStatus();
+  if (!credential.tokenConfigured) {
+    const session = await cloudflareAuth.refreshSession();
+    if (!session.loggedIn) {
+      if (!loginIfNeeded) {
+        throw appError(cloudflareAuthRequiredMessage(), 401);
+      }
+      await cloudflareAuth.login();
+    }
+  }
+
+  const target = await ensureCloudflarePagesTarget({
+    cloudflareAuth,
+    configStore,
+    autoCreate,
+    branch
+  });
+
+  if (!target.cloudflare.authenticated) {
+    throw appError(cloudflareAuthRequiredMessage(), 401);
+  }
+  if (target.cloudflare.needsAccountChoice) {
+    throw appError(
+      "Multiple Cloudflare accounts found. Run `npx pagecast pages setup --account <account-id>` once, then retry.",
+      409
+    );
+  }
+
+  return target;
+}
+
+export async function setupCloudflarePages({
+  projectName,
+  accountId,
+  branch = DEFAULT_PAGES_BRANCH,
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS
+} = {}) {
+  const { configStore, cloudflareAuth } = await createHeadlessCloudflareContext({
+    dataDir,
+    cloudflareAuthSpawnImpl,
+    cloudflareListTimeoutMs
+  });
+  const target = await ensureHeadlessPagesTarget({
+    configStore,
+    cloudflareAuth,
+    projectName,
+    accountId,
+    branch,
+    autoCreate: true,
+    loginIfNeeded: true
+  });
+  return {
+    config: configStore.get(),
+    cloudflare: target.cloudflare
+  };
+}
+
+export async function getCloudflarePagesStatus({
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS
+} = {}) {
+  const { configStore, cloudflareAuth } = await createHeadlessCloudflareContext({
+    dataDir,
+    cloudflareAuthSpawnImpl,
+    cloudflareListTimeoutMs
+  });
+  const credential = cloudflareCredentialStatus();
+  const session = credential.tokenConfigured
+    ? { loggedIn: credential.accountIdConfigured, accounts: [] }
+    : await cloudflareAuth.refreshSession();
+  const pages = configStore.get().pages;
+  const activeAccount =
+    session.accounts.find((account) => account.id === pages.accountId) ||
+    session.accounts[0] ||
+    null;
+  const accountName =
+    normalizeAccountName(activeAccount?.name || "") || normalizeAccountName(pages.accountName || "");
+
+  return {
+    config: configStore.get(),
+    cloudflare: {
+      ...credential,
+      loggedIn: session.loggedIn,
+      accounts: session.accounts,
+      accountName,
+      accountId: pages.accountId || activeAccount?.id || "",
+      projectName: pages.projectName,
+      baseUrl: pages.baseUrl
+    }
+  };
+}
+
+export async function listCloudflarePagesProjects({
+  accountId,
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS
+} = {}) {
+  const { configStore, cloudflareAuth } = await createHeadlessCloudflareContext({
+    dataDir,
+    cloudflareAuthSpawnImpl,
+    cloudflareListTimeoutMs
+  });
+  const current = await applyPagesSelection({ configStore, accountId });
+  const credential = cloudflareCredentialStatus();
+  const envAccountId = normalizeAccountIdSafe(process.env.CLOUDFLARE_ACCOUNT_ID);
+  let selectedAccountId = normalizeAccountIdSafe(accountId || envAccountId || current.pages.accountId);
+
+  if (!credential.tokenConfigured) {
+    const session = await cloudflareAuth.refreshSession();
+    if (!session.loggedIn) {
+      throw appError(cloudflareAuthRequiredMessage(), 401);
+    }
+    if (!selectedAccountId && session.accounts.length === 1) {
+      selectedAccountId = session.accounts[0].id;
+    }
+    if (!selectedAccountId && session.accounts.length > 1) {
+      throw appError(
+        "Multiple Cloudflare accounts found. Re-run with `--account <account-id>`.",
+        409
+      );
+    }
+  }
+
+  if (credential.tokenConfigured && !selectedAccountId) {
+    throw appError("Cloudflare API token mode requires CLOUDFLARE_ACCOUNT_ID or --account.", 401);
+  }
+
+  const projects = await cloudflareAuth.listProjects({ accountId: selectedAccountId });
+  return {
+    projects,
+    accountId: selectedAccountId,
+    selectedProject: chooseWranglerPagesProject(projects, configStore.get().pages)
+  };
+}
+
+export async function deployCloudflarePagesSite({
+  sourceDir,
+  projectName,
+  accountId,
+  branch = DEFAULT_PAGES_BRANCH,
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  pagesDeploySpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS,
+  pagesDeployTimeoutMs = 180000
+} = {}) {
+  if (!projectName) {
+    throw appError("Provide --project for direct Pages site deploys.", 400);
+  }
+  const normalizedBranch = normalizePagesBranch(branch);
+  const normalizedSourceDir = await normalizeLocalFolderPath(sourceDir);
+  const { configStore, cloudflareAuth, pagesPublisher } = await createHeadlessCloudflareContext({
+    dataDir,
+    cloudflareAuthSpawnImpl,
+    pagesDeploySpawnImpl,
+    cloudflareListTimeoutMs,
+    pagesDeployTimeoutMs
+  });
+  await ensureHeadlessPagesTarget({
+    configStore,
+    cloudflareAuth,
+    projectName,
+    accountId,
+    branch: normalizedBranch,
+    autoCreate: true,
+    loginIfNeeded: false
+  });
+  const pagesConfig = configStore.get().pages;
+  const deployment = await pagesPublisher.deploySite({
+    sourceDir: normalizedSourceDir,
+    pagesConfig,
+    branch: normalizedBranch
+  });
+
+  return {
+    url: deployment.baseUrl,
+    deploymentUrl: deployment.deploymentUrl,
+    projectName: pagesConfig.projectName,
+    accountId: pagesConfig.accountId,
+    accountName: pagesConfig.accountName,
+    branch: deployment.branch,
+    sourceDir: normalizedSourceDir
+  };
+}
+
 // Headless one-shot snapshot publish for the CLI / agent skill. Reuses the same
 // store, config, auth, and publisher wiring as the server, auto-provisioning the
 // Cloudflare account and Pages project, and returns the public URL. Throws a
@@ -3551,16 +3851,12 @@ export async function publishReportSnapshot({
 
   const store = createReportStore({ dataDir });
   await store.init();
-  const configStore = createConfigStore({ dataDir });
-  await configStore.init();
-  const cloudflareAuth = createCloudflareAuthManager({
-    spawnImpl: cloudflareAuthSpawnImpl,
-    listTimeoutMs: cloudflareListTimeoutMs
-  });
-  const pagesPublisher = createCloudflarePagesPublisher({
+  const { configStore, cloudflareAuth, pagesPublisher } = await createHeadlessCloudflareContext({
     dataDir,
-    spawnImpl: pagesDeploySpawnImpl,
-    timeoutMs: pagesDeployTimeoutMs
+    cloudflareAuthSpawnImpl,
+    pagesDeploySpawnImpl,
+    cloudflareListTimeoutMs,
+    pagesDeployTimeoutMs
   });
 
   const credential = cloudflareCredentialStatus();
