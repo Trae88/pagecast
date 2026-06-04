@@ -12,6 +12,12 @@ coverage/
 .amazonq/
 .claude/
 .codex/
+!.codex/
+.codex/*
+!.codex/skills/
+.codex/skills/*
+!.codex/skills/publish-report/
+!.codex/skills/publish-report/**
 .cursor/
 .gemini/
 .opencode/

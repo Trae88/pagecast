@@ -4,7 +4,7 @@
     "name": "Pagecast"
   },
   "metadata": {
-    "description": "Publish agent-generated HTML or Markdown reports to durable public URLs on your own free Cloudflare account."
+    "description": "Publish agent-generated HTML or Markdown reports to shareable public URLs with Pagecast."
   },
   "plugins": [
     {

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Pagecast"
+  short_description: "Publish local reports with Pagecast."
+  default_prompt: "Use $publish-report to publish this finished local HTML, Markdown, or static web project with Pagecast."
+
+policy:
+  allow_implicit_invocation: true

@@ -88,8 +88,8 @@ async function main() {
       `An HTML or Markdown file was just written at "${filePath}". ` +
       `If it is a substantial, finished artifact worth sharing (a report, plan, doc, or dashboard) — ` +
       `not a scratch/internal file — offer once: ask the user "Want me to publish this with Pagecast?" ` +
-      `and only on an explicit yes run \`npx pagecast publish "${filePath}" --json\` to get a durable ` +
-      `public URL on their own free Cloudflare account. Never publish without confirmation, and don't re-ask for this file.`;
+      `and only on an explicit yes run \`npx pagecast publish "${filePath}" --json\` to get a shareable ` +
+      `public URL. Never publish without confirmation, and don't re-ask for this file.`;
 
     process.stdout.write(
       JSON.stringify({

@@ -2,7 +2,7 @@
 
 Lets your coding agent (Claude Code, Codex, or any Agent-Skills-compatible tool)
 offer to publish a freshly created **HTML or Markdown** report, plan, or doc to a
-**durable public URL on your own free Cloudflare account**.
+shareable public URL.
 
 How it works: a passive `PostToolUse` hook notices when an HTML/Markdown file is
 written and hints the agent. The `publish-report` skill tells the agent to offer
@@ -16,7 +16,21 @@ npx pagecast publish "/absolute/path/file.md" --json
 
 ## Setup (one time)
 
-### 1. Install the plugin
+### 1. Install the agent integration
+
+**Codex CLI / Codex desktop** — copy the Codex-native skill:
+
+```sh
+mkdir -p ~/.codex/skills
+# from a clone of the repo:
+cp -R .codex/skills/publish-report ~/.codex/skills/
+```
+
+Start a new Codex session so the skill is discovered. Then you can ask:
+
+```text
+Use $publish-report to publish /absolute/path/report.md with Pagecast.
+```
 
 **Claude Code** — add the marketplace from the public repo, then install:
 
@@ -27,27 +41,24 @@ npx pagecast publish "/absolute/path/file.md" --json
 
 This wires up both the `publish-report` skill and the report-detection hook.
 
-**Codex** (or any Agent-Skills tool) — copy the portable skill:
+**Other Agent-Skills tools** — copy the portable skill:
 
 ```sh
-mkdir -p ~/.codex/skills/publish-report
 # from a clone of the repo:
-cp plugin/skills/publish-report/SKILL.md ~/.codex/skills/publish-report/SKILL.md
+cp plugin/skills/publish-report/SKILL.md /path/to/your-agent/skills/publish-report/SKILL.md
 ```
 
-The same `SKILL.md` is the Agent-Skills open-standard format, so it also works in
-Cursor, Gemini CLI, and other compatible agents. The detection hook is
+The portable `SKILL.md` is the Agent-Skills format. The detection hook is
 Claude-Code-specific; elsewhere the skill still triggers when a report is created
-or when you ask to publish.
+or when you ask to publish one.
 
-### 2. Connect Cloudflare (one click, free)
+### 2. Connect Cloudflare
 
 ```sh
 npx pagecast
 ```
 
-Click **Connect Cloudflare** in the panel (a one-click scoped login — no account
-ID, a free Cloudflare account is fine). Or sign in directly:
+Click **Connect Cloudflare** in the panel. Or sign in directly:
 
 ```sh
 npx wrangler login --scopes account:read --scopes user:read --scopes pages:write
@@ -64,7 +75,11 @@ Say **yes** and you get back a public `pagecast.pages.dev` link you own. Say no 
 it drops it — it won't nag. You can rename, re-sync, or revoke any link from
 `npx pagecast`.
 
+For static web projects, build first and publish the generated entry file, such
+as `dist/index.html`. Use `npx pagecast` for folder publishing, source-folder
+build settings, URL renaming, re-sync, and revoke controls.
+
 ## Requirements
 
 - Node.js >= 20 and `npx` (Wrangler is fetched via `npx` on first use).
-- A free Cloudflare account.
+- A Cloudflare account.
