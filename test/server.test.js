@@ -991,6 +991,66 @@ test("Headless publishReportSnapshot auto-provisions and returns a public URL", 
   assert.ok(deployCommands.length >= 1, "expected a Pages deploy");
 });
 
+test("Publish uses the REAL Cloudflare subdomain from the deploy output (name collision)", async () => {
+  // When the <project>.pages.dev subdomain is globally taken, Cloudflare assigns
+  // a suffixed one (e.g. pagecast-6cv.pages.dev). The published URL must use the
+  // real subdomain from the deploy output, not the assumed <project>.pages.dev.
+  const tempDir = await makeTempDir();
+  const dataDir = path.join(tempDir, "data");
+  const reportDir = path.join(tempDir, "report");
+  await fs.mkdir(reportDir, { recursive: true });
+  const reportPath = path.join(reportDir, "report.html");
+  await fs.writeFile(reportPath, "<h1>Collision</h1>");
+
+  const { fakeSpawn: authSpawn } = makeWranglerFake((args) => {
+    if (args.includes("whoami")) {
+      return {
+        code: 0,
+        output: JSON.stringify({
+          accounts: [{ name: "Personal", id: "abcdef0123456789abcdef0123456789" }]
+        })
+      };
+    }
+    if (args.includes("list")) {
+      return {
+        code: 0,
+        output: JSON.stringify([
+          { name: "pagecast", account_id: "abcdef0123456789abcdef0123456789" }
+        ])
+      };
+    }
+    return { code: 0, output: "" };
+  });
+
+  function fakeDeploy() {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => child.emit("exit", null, "SIGTERM");
+    setImmediate(() => {
+      child.stdout.emit(
+        "data",
+        Buffer.from(
+          "✨ Deployment complete! Take a peek over at https://7a52d6ea.pagecast-6cv.pages.dev"
+        )
+      );
+      child.emit("exit", 0, null);
+    });
+    return child;
+  }
+
+  const result = await publishReportSnapshot({
+    path: reportPath,
+    dataDir,
+    cloudflareAuthSpawnImpl: authSpawn,
+    pagesDeploySpawnImpl: fakeDeploy,
+    cloudflareListTimeoutMs: 1000,
+    pagesDeployTimeoutMs: 1000
+  });
+
+  assert.match(result.url, /^https:\/\/pagecast-6cv\.pages\.dev\/p\/.+\/$/);
+});
+
 test("Headless publishReportSnapshot fails clearly when not signed in", async () => {
   const tempDir = await makeTempDir();
   const dataDir = path.join(tempDir, "data");

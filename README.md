@@ -3,7 +3,7 @@
 Preview local HTML reports and static mini apps, then publish them to shareable
 URLs.
 
-**Live demo:** <https://pagecast.pages.dev/p/pagecast/> — the Pagecast landing
+**Live demo:** <https://pagecast-6cv.pages.dev/p/pagecast/> — the Pagecast landing
 page, published with Pagecast itself.
 
 ## Run (one command)

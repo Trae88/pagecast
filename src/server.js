@@ -178,6 +178,21 @@ function pagesBaseUrl(projectName) {
   return `https://${projectName}.pages.dev`;
 }
 
+// Derive the REAL production base URL from a `wrangler pages deploy` output.
+// Cloudflare Pages subdomains are globally unique, so a project named "pagecast"
+// whose subdomain is taken gets e.g. "pagecast-6cv.pages.dev" — the subdomain is
+// NOT always the project name. Wrangler prints the deployment URL as
+// `https://<deploy-hash>.<project-subdomain>.pages.dev`; strip the leading hash
+// label to get the production host. Falls back to `<projectName>.pages.dev`.
+function pagesBaseUrlFromDeployOutput(output, projectName) {
+  const text = stripAnsi(output || "");
+  const match = text.match(/https:\/\/[0-9a-f]{6,12}\.([a-z0-9-]+\.pages\.dev)/i);
+  if (match) {
+    return `https://${match[1].toLowerCase()}`;
+  }
+  return pagesBaseUrl(projectName);
+}
+
 function stripAnsi(value) {
   return String(value || "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
 }
@@ -980,7 +995,9 @@ export function createCloudflarePagesPublisher({
       );
     }
 
-    return pagesBaseUrl(projectName);
+    // Use the real subdomain Cloudflare actually assigned (may differ from the
+    // project name on a global subdomain collision), not an assumed one.
+    return pagesBaseUrlFromDeployOutput(result.output, projectName);
   }
 
   async function publish({ report, publication, pagesConfig }) {
