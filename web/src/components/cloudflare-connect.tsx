@@ -150,7 +150,8 @@ export function CloudflareConnect({ cloudflare }: CloudflareConnectProps) {
         ) : (
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              Connect the account you want Pagecast to use for publishing.
+              Connect the account you want Pagecast to use for publishing. It's
+              free — Pagecast publishes to your own Cloudflare Pages.
             </p>
             <Button
               className="w-full"
@@ -160,7 +161,7 @@ export function CloudflareConnect({ cloudflare }: CloudflareConnectProps) {
               {connect.isPending ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  Connecting…
+                  Waiting for Cloudflare…
                 </>
               ) : loggedIn ? (
                 "Finish setup"
@@ -168,6 +169,24 @@ export function CloudflareConnect({ cloudflare }: CloudflareConnectProps) {
                 "Connect Cloudflare"
               )}
             </Button>
+            {connect.isPending ? (
+              <p className="rounded-md bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
+                A Cloudflare login tab just opened in your browser. Approve access
+                there, then come back here — this finishes automatically.
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Opens a Cloudflare login tab in your browser. Pagecast only
+                requests the scopes it needs to create and deploy your Pages
+                project.
+              </p>
+            )}
+            {connect.isError ? (
+              <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                That didn't complete. Make sure you approved access in the
+                Cloudflare tab, then try again.
+              </p>
+            ) : null}
           </div>
         )}
       </CardContent>

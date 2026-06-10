@@ -11,17 +11,37 @@ import {
   FileText,
   Link2,
   Loader2,
+  MoreHorizontal,
   PanelLeft,
   Pencil,
   RefreshCw,
   Settings,
-  Upload
+  Trash2,
+  Upload,
+  WifiOff
 } from "lucide-react";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from "@/components/ui/alert-dialog";
 import { CloudflareConnect } from "@/components/cloudflare-connect";
 import { AddReport } from "@/components/add-report";
 import { PublicationRow } from "@/components/publication-row";
@@ -30,8 +50,10 @@ import { EditorSheet } from "@/components/editor/editor-sheet";
 import {
   useAutoSync,
   useBuildReport,
+  useDeleteReport,
   usePublishSnapshot,
   useReports,
+  useRevokeAll,
   useStatus
 } from "@/hooks/use-pagecast";
 import {
@@ -88,6 +110,8 @@ export function App() {
   const publish = usePublishSnapshot();
   const autoSync = useAutoSync();
   const build = useBuildReport();
+  const deleteReport = useDeleteReport();
+  const revokeAll = useRevokeAll();
 
   const reportItems = useMemo(() => reports.data ?? [], [reports.data]);
   const [activeView, setActiveView] = useState<ActiveView>("pages");
@@ -100,6 +124,8 @@ export function App() {
   const [publishingReportId, setPublishingReportId] = useState<string | null>(null);
   const [publishStartedAt, setPublishStartedAt] = useState<number | null>(null);
   const [publishSummary, setPublishSummary] = useState<PublishSummary | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Report | null>(null);
+  const [pendingRevoke, setPendingRevoke] = useState<Report | null>(null);
   const elapsedMs = useElapsed(publishStartedAt);
 
   useEffect(() => {
@@ -172,10 +198,27 @@ export function App() {
     });
   };
 
+  const goToSettings = () => setActiveView("settings");
+
+  const confirmDelete = () => {
+    if (!pendingDelete) return;
+    deleteReport.mutate(pendingDelete.id, {
+      onSettled: () => setPendingDelete(null)
+    });
+  };
+
+  const confirmRevokeAll = () => {
+    if (!pendingRevoke) return;
+    revokeAll.mutate(pendingRevoke.id, {
+      onSettled: () => setPendingRevoke(null)
+    });
+  };
+
   const cloudflare = status.data?.cloudflare;
   const accountName = displayAccountName(cloudflare);
   const projectName = cloudflare?.projectName || "";
   const connected = Boolean(cloudflare?.loggedIn && accountName && projectName);
+  const cloudflareReady = !status.isLoading && status.data !== undefined;
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -213,6 +256,8 @@ export function App() {
             isLoading={reports.isLoading}
             onSelectReport={selectReport}
             onOpenSettings={() => setActiveView("settings")}
+            onRequestDelete={setPendingDelete}
+            onRequestRevokeAll={setPendingRevoke}
           />
 
           <main className="min-w-0 bg-muted/20">
@@ -243,6 +288,8 @@ export function App() {
                   <PageWorkspace
                     report={selectedReport}
                     isLoading={reports.isLoading}
+                    connected={connected}
+                    cloudflareReady={cloudflareReady}
                     publishPending={publish.isPending}
                     buildPending={build.isPending}
                     publishingReportId={publishingReportId}
@@ -257,6 +304,9 @@ export function App() {
                     onPreview={openPreview}
                     onEdit={openEditor}
                     onPublish={startPublish}
+                    onConnect={goToSettings}
+                    onRequestDelete={setPendingDelete}
+                    onRequestRevokeAll={setPendingRevoke}
                   />
                 </motion.div>
               )}
@@ -275,6 +325,78 @@ export function App() {
         open={editorOpen}
         onOpenChange={setEditorOpen}
       />
+
+      <AlertDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this page?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDelete
+                ? `"${pendingDelete.name}" will be removed from Pagecast${
+                    pendingDelete.publications.some((p) => p.active)
+                      ? " and any public links it has will be taken offline"
+                      : ""
+                  }. Your original source file is not touched. This can't be undone.`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                confirmDelete();
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteReport.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4" />
+              )}
+              Delete page
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={pendingRevoke !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRevoke(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Take all links offline?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingRevoke
+                ? `Every public link for "${pendingRevoke.name}" will stop working after the next deploy. The page itself stays in Pagecast — you can publish a fresh link anytime.`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                confirmRevokeAll();
+              }}
+            >
+              {revokeAll.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : null}
+              Take links offline
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <Toaster />
     </TooltipProvider>
   );
@@ -336,7 +458,9 @@ function PageSidebar({
   activeView,
   isLoading,
   onSelectReport,
-  onOpenSettings
+  onOpenSettings,
+  onRequestDelete,
+  onRequestRevokeAll
 }: {
   reports: Report[];
   selectedReportId: string | null;
@@ -344,6 +468,8 @@ function PageSidebar({
   isLoading: boolean;
   onSelectReport: (report: Report) => void;
   onOpenSettings: () => void;
+  onRequestDelete: (report: Report) => void;
+  onRequestRevokeAll: (report: Report) => void;
 }) {
   return (
     <aside className="border-b bg-background lg:border-b-0 lg:border-r">
@@ -374,41 +500,78 @@ function PageSidebar({
               </p>
             </div>
           ) : (
-            reports.map((report) => (
-              <button
-                key={report.id}
-                type="button"
-                onClick={() => onSelectReport(report)}
-                className={cn(
-                  "group relative flex w-full items-start gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  activeView === "pages" &&
-                    selectedReportId === report.id &&
-                    "bg-accent"
-                )}
-              >
-                {activeView === "pages" && selectedReportId === report.id ? (
-                  <motion.span
-                    layoutId="selected-page-pill"
-                    className="absolute left-0 top-2 h-8 w-0.5 rounded-full bg-primary"
-                  />
-                ) : null}
-                <FileText className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium">
-                    {report.name}
-                  </span>
-                  <span className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                    {report.publicUrl ? "Published" : "Draft"}
-                    {report.kind === "upload" ? (
-                      <span className="inline-flex items-center gap-1">
-                        <Upload className="h-3 w-3" />
-                        upload
+            reports.map((report) => {
+              const isSelected =
+                activeView === "pages" && selectedReportId === report.id;
+              const hasActiveLinks = report.publications.some((p) => p.active);
+              return (
+                <div
+                  key={report.id}
+                  className={cn(
+                    "group relative flex items-center rounded-md transition-colors hover:bg-accent",
+                    isSelected && "bg-accent"
+                  )}
+                >
+                  {isSelected ? (
+                    <motion.span
+                      layoutId="selected-page-pill"
+                      className="absolute left-0 top-2 h-8 w-0.5 rounded-full bg-primary"
+                    />
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => onSelectReport(report)}
+                    className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <FileText className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium">
+                        {report.name}
                       </span>
-                    ) : null}
-                  </span>
-                </span>
-              </button>
-            ))
+                      <span className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                        {hasActiveLinks ? "Published" : "Draft"}
+                        {report.kind === "upload" ? (
+                          <span className="inline-flex items-center gap-1">
+                            <Upload className="h-3 w-3" />
+                            upload
+                          </span>
+                        ) : null}
+                      </span>
+                    </span>
+                  </button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="mr-1 h-7 w-7 shrink-0 text-muted-foreground opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100"
+                        aria-label={`Actions for ${report.name}`}
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      {hasActiveLinks ? (
+                        <>
+                          <DropdownMenuItem onSelect={() => onRequestRevokeAll(report)}>
+                            <WifiOff className="h-4 w-4" />
+                            Take links offline
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                        </>
+                      ) : null}
+                      <DropdownMenuItem
+                        onSelect={() => onRequestDelete(report)}
+                        className="text-destructive focus:text-destructive"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete page
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              );
+            })
           )}
         </nav>
 
@@ -433,6 +596,8 @@ function PageSidebar({
 function PageWorkspace({
   report,
   isLoading,
+  connected,
+  cloudflareReady,
   publishPending,
   buildPending,
   publishingReportId,
@@ -444,10 +609,15 @@ function PageWorkspace({
   onToggleAutoSync,
   onPreview,
   onEdit,
-  onPublish
+  onPublish,
+  onConnect,
+  onRequestDelete,
+  onRequestRevokeAll
 }: {
   report: Report | null;
   isLoading: boolean;
+  connected: boolean;
+  cloudflareReady: boolean;
   publishPending: boolean;
   buildPending: boolean;
   publishingReportId: string | null;
@@ -460,6 +630,9 @@ function PageWorkspace({
   onPreview: (report: Report) => void;
   onEdit: (report: Report) => void;
   onPublish: (report: Report) => void;
+  onConnect: () => void;
+  onRequestDelete: (report: Report) => void;
+  onRequestRevokeAll: (report: Report) => void;
 }) {
   if (isLoading) {
     return (
@@ -490,9 +663,27 @@ function PageWorkspace({
     .find((publication) => publication.kind === "snapshot" && publication.publicUrl);
   const isPublishingThisReport = publishPending && publishingReportId === report.id;
   const needsBuild = report.kind === "folder" && report.buildCommand && report.buildStatus !== "ready";
+  const hasActiveLinks = activePublications.length > 0;
+  // Only block publishing once we actually know Cloudflare is not connected;
+  // while status is still loading we keep the button live to avoid a flash.
+  const publishBlocked = cloudflareReady && !connected;
 
   return (
     <>
+      {publishBlocked ? (
+        <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-2.5">
+            <Cloud className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <p className="text-amber-900">
+              Connect a free Cloudflare account once to turn your pages into public links.
+            </p>
+          </div>
+          <Button size="sm" onClick={onConnect} className="shrink-0">
+            Connect Cloudflare
+          </Button>
+        </div>
+      ) : null}
+
       <section className="rounded-lg border bg-background">
         <div className="flex flex-col gap-4 border-b p-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
@@ -544,18 +735,55 @@ function PageWorkspace({
                 Build
               </Button>
             ) : null}
-            <Button
-              size="sm"
-              onClick={() => onPublish(report)}
-              disabled={publishPending || buildPending}
-            >
-              {isPublishingThisReport ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Cloud className="h-4 w-4" />
-              )}
-              Publish URL
-            </Button>
+            {publishBlocked ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button size="sm" onClick={onConnect} variant="secondary">
+                    <Cloud className="h-4 w-4" />
+                    Publish URL
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Connect Cloudflare first</TooltipContent>
+              </Tooltip>
+            ) : (
+              <Button
+                size="sm"
+                onClick={() => onPublish(report)}
+                disabled={publishPending || buildPending}
+              >
+                {isPublishingThisReport ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Cloud className="h-4 w-4" />
+                )}
+                Publish URL
+              </Button>
+            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="icon" variant="outline" className="h-8 w-8" aria-label="More actions">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {hasActiveLinks ? (
+                  <>
+                    <DropdownMenuItem onSelect={() => onRequestRevokeAll(report)}>
+                      <WifiOff className="h-4 w-4" />
+                      Take links offline
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                ) : null}
+                <DropdownMenuItem
+                  onSelect={() => onRequestDelete(report)}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Delete page
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
