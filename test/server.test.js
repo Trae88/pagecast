@@ -11,10 +11,14 @@ import {
   TunnelManager,
   chooseWranglerPagesProject,
   cloudflareCredentialStatus,
+  createCloudflareAuthManager,
   createConfigStore,
   createDeployQueue,
   createReportStore,
+  findKvNamespaceId,
   injectFeedbackWidget,
+  parseKvNamespaceId,
+  parseWorkerDevUrl,
   deployCloudflarePagesSite,
   extractPublicUrl,
   isLoopbackHostHeader,
@@ -2479,4 +2483,103 @@ test("config store persists and clears feedback settings", async () => {
   assert.equal(bad.feedback, null);
 
   await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("feedback wrangler-output parsers extract ids and urls", () => {
+  assert.equal(
+    parseKvNamespaceId('[[kv_namespaces]]\nbinding = "PAGECAST_FEEDBACK"\nid = "0123456789abcdef0123456789abcdef"'),
+    "0123456789abcdef0123456789abcdef"
+  );
+  assert.equal(parseKvNamespaceId('"id": "ABCDEF0123456789ABCDEF0123456789"'), "abcdef0123456789abcdef0123456789");
+  assert.equal(parseKvNamespaceId("no id here"), "");
+
+  const list = JSON.stringify([
+    { id: "11111111111111111111111111111111", title: "other" },
+    { id: "22222222222222222222222222222222", title: "pagecast-feedback-store" }
+  ]);
+  assert.equal(findKvNamespaceId(list, "pagecast-feedback-store"), "22222222222222222222222222222222");
+  assert.equal(findKvNamespaceId(list, "missing"), "");
+
+  assert.equal(
+    parseWorkerDevUrl("Published pagecast-feedback\n  https://pagecast-feedback.acme.workers.dev (3.2 sec)"),
+    "https://pagecast-feedback.acme.workers.dev"
+  );
+  assert.equal(parseWorkerDevUrl("no url"), "");
+});
+
+test("setupFeedback creates KV, deploys the worker, and returns the url", async () => {
+  const calls = [];
+  const { fakeSpawn } = makeWranglerFake((args) => {
+    const line = args.join(" ");
+    calls.push(line);
+    if (line.includes("kv namespace list")) {
+      return { code: 0, output: "[]" }; // none yet -> must create
+    }
+    if (line.includes("kv namespace create")) {
+      return { code: 0, output: 'id = "0123456789abcdef0123456789abcdef"' };
+    }
+    if (line.includes("deploy")) {
+      return { code: 0, output: "Uploaded\nhttps://pagecast-feedback.acme.workers.dev" };
+    }
+    return { code: 0, output: "" };
+  });
+
+  const manager = createCloudflareAuthManager({ spawnImpl: fakeSpawn });
+  const deployDir = await fs.mkdtemp(path.join(os.tmpdir(), "pagecast-fb-"));
+
+  const result = await manager.setupFeedback({
+    accountId: "90e4c638bea527f464ec6fa7caebfd4e",
+    workerName: "pagecast-feedback",
+    workerSource: "export default { fetch(){} }",
+    statsToken: "tok-123",
+    deployDir
+  });
+
+  assert.equal(result.url, "https://pagecast-feedback.acme.workers.dev");
+  assert.equal(result.kvId, "0123456789abcdef0123456789abcdef");
+  assert.equal(result.statsToken, "tok-123");
+
+  // The generated wrangler.toml binds the KV namespace and the stats token.
+  const toml = await fs.readFile(path.join(deployDir, "wrangler.toml"), "utf8");
+  assert.match(toml, /binding = "PAGECAST_FEEDBACK"/);
+  assert.match(toml, /id = "0123456789abcdef0123456789abcdef"/);
+  assert.match(toml, /PAGECAST_STATS_TOKEN = "tok-123"/);
+  // The worker source was staged next to it.
+  assert.match(await fs.readFile(path.join(deployDir, "worker.js"), "utf8"), /export default/);
+
+  // It actually created (not just listed) because the list was empty.
+  assert.ok(calls.some((c) => c.includes("kv namespace create")));
+  assert.ok(calls.some((c) => c.includes("deploy")));
+
+  await fs.rm(deployDir, { recursive: true, force: true });
+});
+
+test("setupFeedback reuses an existing KV namespace by title", async () => {
+  const calls = [];
+  const { fakeSpawn } = makeWranglerFake((args) => {
+    const line = args.join(" ");
+    calls.push(line);
+    if (line.includes("kv namespace list")) {
+      return {
+        code: 0,
+        output: JSON.stringify([{ id: "dddddddddddddddddddddddddddddddd", title: "pagecast-feedback-store" }])
+      };
+    }
+    if (line.includes("deploy")) {
+      return { code: 0, output: "https://pagecast-feedback.acme.workers.dev" };
+    }
+    return { code: 0, output: "" };
+  });
+
+  const manager = createCloudflareAuthManager({ spawnImpl: fakeSpawn });
+  const deployDir = await fs.mkdtemp(path.join(os.tmpdir(), "pagecast-fb2-"));
+  const result = await manager.setupFeedback({
+    workerSource: "export default {}",
+    statsToken: "t",
+    deployDir
+  });
+
+  assert.equal(result.kvId, "dddddddddddddddddddddddddddddddd");
+  assert.ok(!calls.some((c) => c.includes("kv namespace create")), "should not create when one exists");
+  await fs.rm(deployDir, { recursive: true, force: true });
 });

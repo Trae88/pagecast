@@ -228,6 +228,43 @@ function cleanCommandOutput(output) {
     .trim();
 }
 
+// --- Feedback Worker provisioning: parse wrangler outputs --------------------
+
+// A KV namespace id is a 32-char hex string. `wrangler kv namespace create`
+// prints a TOML/JSON snippet containing `id = "<hex>"` / `"id": "<hex>"`.
+export function parseKvNamespaceId(output) {
+  const text = stripAnsi(output || "");
+  const match = text.match(/(?:id\s*=\s*|"id"\s*:\s*)"([0-9a-f]{32})"/i);
+  return match ? match[1].toLowerCase() : "";
+}
+
+// `wrangler kv namespace list` prints a JSON array of { id, title }. Reuse an
+// existing namespace by title so re-running setup is idempotent.
+export function findKvNamespaceId(output, title) {
+  const text = stripAnsi(output || "");
+  try {
+    const start = text.indexOf("[");
+    const end = text.lastIndexOf("]");
+    if (start >= 0 && end > start) {
+      const list = JSON.parse(text.slice(start, end + 1));
+      const hit = list.find((entry) => entry && entry.title === title);
+      if (hit && /^[0-9a-f]{32}$/i.test(hit.id || "")) {
+        return String(hit.id).toLowerCase();
+      }
+    }
+  } catch {
+    // Non-JSON or unexpected shape — treat as "not found" and create one.
+  }
+  return "";
+}
+
+// The deployed Worker's public origin, e.g. https://name.sub.workers.dev.
+export function parseWorkerDevUrl(output) {
+  const text = stripAnsi(output || "");
+  const match = text.match(/https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev/i);
+  return match ? match[0].toLowerCase() : "";
+}
+
 // Normalize the persisted feedback (reactions + analytics) settings. Returns
 // null until the feedback Worker has been provisioned, so callers can treat the
 // whole feature as off by checking for a truthy `feedback`.
@@ -1412,6 +1449,83 @@ export function createCloudflareAuthManager({
     return name;
   }
 
+  // Provision the feedback Worker: reuse-or-create a KV namespace, stage the
+  // worker + a generated wrangler.toml, and deploy it to the account's
+  // workers.dev. Returns { url, kvId, workerName, statsToken }. Side-effecting
+  // (creates real Cloudflare resources) — only run on explicit user action.
+  async function setupFeedback({
+    accountId = "",
+    workerName = "pagecast-feedback",
+    workerSource = "",
+    statsToken = "",
+    deployDir,
+    timeoutMs = 120000
+  } = {}) {
+    if (!workerSource) {
+      throw appError("Feedback Worker source was not found in the package.", 500);
+    }
+    if (!deployDir) {
+      throw appError("A deploy directory is required to set up feedback.", 500);
+    }
+    const env = accountId ? { CLOUDFLARE_ACCOUNT_ID: accountId } : {};
+    const kvTitle = `${workerName}-store`;
+
+    // 1. Reuse or create the KV namespace.
+    let kvId = "";
+    try {
+      const listOut = await runWrangler(["kv", "namespace", "list"], timeoutMs, env);
+      kvId = findKvNamespaceId(listOut, kvTitle);
+    } catch {
+      // Listing isn't available/authorized — fall through to create.
+    }
+    if (!kvId) {
+      const createOut = await runWrangler(
+        ["kv", "namespace", "create", kvTitle],
+        timeoutMs,
+        env
+      );
+      kvId = parseKvNamespaceId(createOut);
+    }
+    if (!kvId) {
+      throw appError("Could not create the feedback KV namespace.", 502);
+    }
+
+    // 2. Stage worker.js + a generated wrangler.toml in a clean temp dir.
+    await fs.rm(deployDir, { recursive: true, force: true });
+    await fs.mkdir(deployDir, { recursive: true });
+    await fs.writeFile(path.join(deployDir, "worker.js"), workerSource, "utf8");
+    const toml = [
+      `name = "${workerName}"`,
+      `main = "worker.js"`,
+      `compatibility_date = "2024-09-01"`,
+      `workers_dev = true`,
+      ``,
+      `[[kv_namespaces]]`,
+      `binding = "PAGECAST_FEEDBACK"`,
+      `id = "${kvId}"`,
+      ``,
+      `[vars]`,
+      `PAGECAST_STATS_TOKEN = "${statsToken}"`,
+      ``
+    ].join("\n");
+    await fs.writeFile(path.join(deployDir, "wrangler.toml"), toml, "utf8");
+
+    // 3. Deploy. Wrangler resolves `main` relative to the config file's dir.
+    const deployOut = await runWrangler(
+      ["deploy", "--config", path.join(deployDir, "wrangler.toml")],
+      timeoutMs,
+      env
+    );
+    const url = parseWorkerDevUrl(deployOut);
+    if (!url) {
+      throw appError(
+        "Feedback Worker deployed but no workers.dev URL was returned. Enable a workers.dev subdomain in your Cloudflare dashboard, then retry.",
+        502
+      );
+    }
+    return { url, kvId, workerName, statsToken };
+  }
+
   function cachedSession() {
     return sessionCache ? sessionCache.value : { loggedIn: false, accounts: [] };
   }
@@ -1439,6 +1553,7 @@ export function createCloudflareAuthManager({
     loginAndListProjects,
     whoami,
     ensureProject,
+    setupFeedback,
     cachedSession,
     refreshSession,
     invalidateSession
@@ -3847,6 +3962,45 @@ export async function setupCloudflarePages({
     config: configStore.get(),
     cloudflare: target.cloudflare
   };
+}
+
+// Provision the feedback Worker + KV on the user's account and persist the
+// resulting config. Reuses an existing stats token/namespace on re-run.
+export async function setupCloudflareFeedback({
+  accountId,
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS,
+  feedbackTimeoutMs = 120000
+} = {}) {
+  const { configStore, cloudflareAuth } = await createHeadlessCloudflareContext({
+    dataDir,
+    cloudflareAuthSpawnImpl,
+    cloudflareListTimeoutMs
+  });
+  const pages = configStore.get().pages;
+  const resolvedAccountId = normalizeAccountId(accountId || pages.accountId || "");
+
+  const workerPath = path.join(PROJECT_ROOT, "feedback", "worker.js");
+  let workerSource;
+  try {
+    workerSource = await fs.readFile(workerPath, "utf8");
+  } catch {
+    throw appError("Feedback Worker source not found in the package.", 500);
+  }
+
+  const existing = configStore.get().feedback;
+  const statsToken = existing?.statsToken || randomBytes(24).toString("hex");
+
+  const result = await cloudflareAuth.setupFeedback({
+    accountId: resolvedAccountId,
+    workerSource,
+    statsToken,
+    deployDir: path.join(dataDir, "feedback-deploy")
+  });
+
+  const config = await configStore.updateFeedback(result);
+  return { config, feedback: config.feedback };
 }
 
 export async function getCloudflarePagesStatus({
