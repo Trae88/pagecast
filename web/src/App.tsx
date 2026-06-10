@@ -443,8 +443,16 @@ function TopBar({
     <header className="sticky top-0 z-30 border-b bg-background/90 backdrop-blur">
       <div className="flex h-14 items-center justify-between gap-4 px-4 sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-[13px] font-semibold text-primary-foreground shadow-sm">
-            P
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+              <circle cx="6.5" cy="17.5" r="2.5" fill="currentColor" />
+              <path
+                d="M6.5 11.5a6 6 0 0 1 6 6M6.5 5.5a12 12 0 0 1 12 12"
+                stroke="currentColor"
+                strokeWidth="2.25"
+                strokeLinecap="round"
+              />
+            </svg>
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -783,7 +791,7 @@ function PageWorkspace({
         <div className="flex flex-col gap-4 border-b p-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="truncate text-xl font-semibold tracking-tight">
+              <h2 className="truncate text-2xl font-semibold tracking-tight">
                 {report.name}
               </h2>
               <Badge variant={report.publicUrl ? "secondary" : "outline"}>
