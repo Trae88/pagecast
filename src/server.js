@@ -957,7 +957,10 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
         projectName: projectName === undefined ? config.pages.projectName : projectName,
         accountId: nextAccountId,
         accountName: nextAccountName
-      }
+      },
+      // Preserve feedback config — a pages update (e.g. persisting the account on
+      // publish) must not wipe an already-provisioned feedback Worker.
+      feedback: config.feedback
     });
     await save();
     return get();
@@ -3951,7 +3954,10 @@ async function createHeadlessCloudflareContext({
   const pagesPublisher = createCloudflarePagesPublisher({
     dataDir,
     spawnImpl: pagesDeploySpawnImpl,
-    timeoutMs: pagesDeployTimeoutMs
+    timeoutMs: pagesDeployTimeoutMs,
+    // Headless/CLI publishes (incl. the agent skill's `npx pagecast publish`)
+    // must inject the feedback widget too, not just the running app.
+    getFeedback: () => configStore.get().feedback
   });
   return { configStore, cloudflareAuth, pagesPublisher };
 }

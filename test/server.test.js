@@ -2583,3 +2583,23 @@ test("setupFeedback reuses an existing KV namespace by title", async () => {
   assert.ok(!calls.some((c) => c.includes("kv namespace create")), "should not create when one exists");
   await fs.rm(deployDir, { recursive: true, force: true });
 });
+
+test("updatePages preserves an already-provisioned feedback config", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pagecast-cfg2-"));
+  const store = createConfigStore({ dataDir: dir });
+  await store.init();
+
+  await store.updateFeedback({
+    url: "https://pagecast-feedback.acme.workers.dev",
+    statsToken: "tok",
+    workerName: "pagecast-feedback",
+    kvId: "ffffffffffffffffffffffffffffffff"
+  });
+
+  // Persisting a pages/account selection (as publish does) must NOT wipe feedback.
+  const after = await store.updatePages({ projectName: "myproj", accountId: "0".repeat(32) });
+  assert.equal(after.pages.projectName, "myproj");
+  assert.equal(after.feedback?.url, "https://pagecast-feedback.acme.workers.dev");
+
+  await fs.rm(dir, { recursive: true, force: true });
+});
