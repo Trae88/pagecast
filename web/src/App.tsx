@@ -1,5 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { toast } from "sonner";
 import {
   Activity,
@@ -9,6 +26,7 @@ import {
   Copy,
   ExternalLink,
   FileText,
+  GripVertical,
   Link2,
   Loader2,
   MoreHorizontal,
@@ -52,6 +70,7 @@ import {
   useBuildReport,
   useDeleteReport,
   usePublishSnapshot,
+  useReorder,
   useReports,
   useRevokeAll,
   useStatus
@@ -476,6 +495,31 @@ function PageSidebar({
   onRequestDelete: (report: Report) => void;
   onRequestRevokeAll: (report: Report) => void;
 }) {
+  // Local mirror for instant drag feedback; react-query is the source of truth
+  // and the optimistic reorder mutation reconciles it.
+  const [items, setItems] = useState<Report[]>(reports);
+  const reorder = useReorder();
+
+  useEffect(() => {
+    setItems(reports);
+  }, [reports]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = items.findIndex((item) => item.id === active.id);
+    const newIndex = items.findIndex((item) => item.id === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
+    const next = arrayMove(items, oldIndex, newIndex);
+    setItems(next);
+    reorder.mutate(next.map((item) => item.id));
+  };
+
   return (
     <aside className="border-b bg-background lg:border-b-0 lg:border-r">
       <div className="flex h-full flex-col">
@@ -496,7 +540,7 @@ function PageSidebar({
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading pages...
             </div>
-          ) : reports.length === 0 ? (
+          ) : items.length === 0 ? (
             <div className="mx-2 my-6 rounded-lg border border-dashed px-3 py-6 text-center">
               <FileText className="mx-auto h-5 w-5 text-muted-foreground" />
               <p className="mt-2 text-sm font-medium">No pages yet</p>
@@ -505,78 +549,29 @@ function PageSidebar({
               </p>
             </div>
           ) : (
-            reports.map((report) => {
-              const isSelected =
-                activeView === "pages" && selectedReportId === report.id;
-              const hasActiveLinks = report.publications.some((p) => p.active);
-              return (
-                <div
-                  key={report.id}
-                  className={cn(
-                    "group relative flex items-center rounded-md transition-colors hover:bg-accent",
-                    isSelected && "bg-accent"
-                  )}
-                >
-                  {isSelected ? (
-                    <motion.span
-                      layoutId="selected-page-pill"
-                      className="absolute left-0 top-2 h-8 w-0.5 rounded-full bg-primary"
-                    />
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={() => onSelectReport(report)}
-                    className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    <FileText className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium">
-                        {report.name}
-                      </span>
-                      <span className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                        {hasActiveLinks ? "Published" : "Draft"}
-                        {report.kind === "upload" ? (
-                          <span className="inline-flex items-center gap-1">
-                            <Upload className="h-3 w-3" />
-                            upload
-                          </span>
-                        ) : null}
-                      </span>
-                    </span>
-                  </button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="mr-1 h-7 w-7 shrink-0 text-muted-foreground opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100"
-                        aria-label={`Actions for ${report.name}`}
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      {hasActiveLinks ? (
-                        <>
-                          <DropdownMenuItem onSelect={() => onRequestRevokeAll(report)}>
-                            <WifiOff className="h-4 w-4" />
-                            Take links offline
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                        </>
-                      ) : null}
-                      <DropdownMenuItem
-                        onSelect={() => onRequestDelete(report)}
-                        className="text-destructive focus:text-destructive"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                        Delete page
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              );
-            })
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleDragEnd}
+            >
+              <SortableContext
+                items={items.map((item) => item.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                {items.map((report) => (
+                  <SortablePageRow
+                    key={report.id}
+                    report={report}
+                    isSelected={
+                      activeView === "pages" && selectedReportId === report.id
+                    }
+                    onSelect={onSelectReport}
+                    onRequestDelete={onRequestDelete}
+                    onRequestRevokeAll={onRequestRevokeAll}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
           )}
         </nav>
 
@@ -595,6 +590,101 @@ function PageSidebar({
         </div>
       </div>
     </aside>
+  );
+}
+
+function SortablePageRow({
+  report,
+  isSelected,
+  onSelect,
+  onRequestDelete,
+  onRequestRevokeAll
+}: {
+  report: Report;
+  isSelected: boolean;
+  onSelect: (report: Report) => void;
+  onRequestDelete: (report: Report) => void;
+  onRequestRevokeAll: (report: Report) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: report.id });
+  const hasActiveLinks = report.publications.some((p) => p.active);
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={cn(
+        "group relative mb-1 flex items-center rounded-md transition-colors hover:bg-accent",
+        isSelected && "bg-accent",
+        isDragging && "z-10 bg-background opacity-80 shadow-md"
+      )}
+    >
+      {isSelected ? (
+        <motion.span
+          layoutId="selected-page-pill"
+          className="absolute left-0 top-2 h-8 w-0.5 rounded-full bg-primary"
+        />
+      ) : null}
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        aria-label={`Reorder ${report.name}`}
+        className="flex h-8 w-5 shrink-0 cursor-grab touch-none items-center justify-center text-muted-foreground/50 opacity-0 transition-opacity hover:text-muted-foreground focus-visible:opacity-100 active:cursor-grabbing group-hover:opacity-100"
+      >
+        <GripVertical className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => onSelect(report)}
+        className="flex min-w-0 flex-1 items-start gap-2.5 rounded-md py-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        <FileText className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium">{report.name}</span>
+          <span className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+            {hasActiveLinks ? "Published" : "Draft"}
+            {report.kind === "upload" ? (
+              <span className="inline-flex items-center gap-1">
+                <Upload className="h-3 w-3" />
+                upload
+              </span>
+            ) : null}
+          </span>
+        </span>
+      </button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="mr-1 h-7 w-7 shrink-0 text-muted-foreground opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100"
+            aria-label={`Actions for ${report.name}`}
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {hasActiveLinks ? (
+            <>
+              <DropdownMenuItem onSelect={() => onRequestRevokeAll(report)}>
+                <WifiOff className="h-4 w-4" />
+                Take links offline
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
+          <DropdownMenuItem
+            onSelect={() => onRequestDelete(report)}
+            className="text-destructive focus:text-destructive"
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete page
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   );
 }
 
