@@ -119,6 +119,20 @@ function isIndexFileName(fileName) {
   return base === "index.html" || base === "index.htm" || base === "index.md" || base === "index.markdown";
 }
 
+// Display name for a report. A bare `index.html` is meaningless when many
+// reports share it, so for generic entry files fall back to the parent folder
+// name (e.g. /path/lissin-wall-of-love/index.html -> "lissin-wall-of-love").
+export function deriveReportName(filePath) {
+  const base = path.basename(filePath);
+  if (isIndexFileName(base)) {
+    const parent = path.basename(path.dirname(filePath));
+    if (parent && parent !== "." && parent !== path.sep) {
+      return parent;
+    }
+  }
+  return base;
+}
+
 function slugifyReportName(fileName) {
   const baseName = path.basename(fileName, path.extname(fileName));
   const slug = baseName
@@ -1626,8 +1640,15 @@ export function createReportStore({
   function normalizeReport(report) {
     const kind = report.kind;
     const defaultSourceMode = kind === "upload" ? "edited-in-pagecast" : "source-tracked";
+    // Migrate legacy names: reports were named by their bare filename, so many
+    // path reports all read "index.html". Re-derive from the parent folder.
+    let name = report.name;
+    if (typeof report.sourcePath === "string" && isIndexFileName(String(name || ""))) {
+      name = deriveReportName(report.sourcePath);
+    }
     return {
       ...report,
+      name,
       order: typeof report.order === "number" ? report.order : Number.MAX_SAFE_INTEGER,
       autoSync: report.autoSync === true,
       workingDir: typeof report.workingDir === "string" ? report.workingDir : null,
@@ -1768,11 +1789,21 @@ export function createReportStore({
 
   async function addPath(sourcePath) {
     const normalizedPath = await normalizeLocalHtmlPath(sourcePath);
+
+    // Reuse an existing path report for the same source file instead of adding a
+    // duplicate row each time it's published. Re-publishing then adds another
+    // snapshot/link to the same report rather than cloning it.
+    for (const existing of reports.values()) {
+      if (existing.kind === "path" && existing.sourcePath === normalizedPath) {
+        return existing;
+      }
+    }
+
     const createdAt = nowIso();
     const report = {
       id: createReportId(normalizedPath),
       kind: "path",
-      name: path.basename(normalizedPath),
+      name: deriveReportName(normalizedPath),
       sourcePath: normalizedPath,
       rootDir: path.dirname(normalizedPath),
       entryFile: path.basename(normalizedPath),

@@ -2064,11 +2064,21 @@ test("reorder respects ids, appends new reports, and rejects unknown ids", async
     const ordered = (await reorderResponse.json()).reports.map((r) => r.id);
     assert.deepEqual(ordered, [c.id, a.id, b.id]);
 
-    // A newly added report appends last.
-    const newReport = await addPathReport(runtime.adminUrl, paths[0]);
+    // A newly added (distinct) report appends last.
+    const extraDir = path.join(tempDir, "extra");
+    await fs.mkdir(extraDir, { recursive: true });
+    const extraPath = path.join(extraDir, "extra.html");
+    await fs.writeFile(extraPath, "<h1>extra</h1>");
+    const newReport = await addPathReport(runtime.adminUrl, extraPath);
     const listResponse = await fetch(`${runtime.adminUrl}/api/reports`);
     const listIds = (await listResponse.json()).reports.map((r) => r.id);
     assert.equal(listIds[listIds.length - 1], newReport.id);
+
+    // Re-adding an already-tracked path reuses the existing report — no duplicate.
+    const dup = await addPathReport(runtime.adminUrl, paths[0]);
+    assert.equal(dup.id, a.id);
+    const afterDup = (await (await fetch(`${runtime.adminUrl}/api/reports`)).json()).reports;
+    assert.equal(afterDup.length, listIds.length, "re-adding a path must not add a row");
 
     // Unknown id -> 400.
     const badResponse = await fetch(`${runtime.adminUrl}/api/reports/reorder`, {
