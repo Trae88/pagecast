@@ -9,6 +9,7 @@ import {
   getCloudflarePagesStatus,
   listCloudflarePagesProjects,
   publishReportSnapshot,
+  setupCloudflareFeedback,
   setupCloudflarePages,
   startServers
 } from "./server.js";
@@ -283,6 +284,47 @@ async function pages(args) {
   }
 }
 
+async function feedback(args) {
+  const [subcommand, ...rest] = args;
+  const parsed = parseFlags(rest);
+  const json = wantsJson(parsed);
+  const accountId = optionValue(parsed, "account", "account-id");
+
+  try {
+    if (subcommand === "setup") {
+      const result = await setupCloudflareFeedback({ accountId, dataDir });
+      if (json) {
+        console.log(JSON.stringify({ ok: true, ...result }));
+      } else if (result.feedback?.url) {
+        console.log(`Feedback ready: ${result.feedback.url}`);
+        console.log("Reactions + view analytics now attach to pages you publish.");
+      } else {
+        console.log("Feedback setup did not complete.");
+      }
+      return;
+    }
+
+    if (subcommand === "status") {
+      const status = await getCloudflarePagesStatus({ dataDir });
+      const fb = status.config?.feedback;
+      if (json) {
+        console.log(JSON.stringify({ ok: true, feedback: fb || null }));
+      } else if (fb?.url) {
+        console.log(`Feedback: enabled (${fb.url})`);
+      } else {
+        console.log("Feedback: not set up. Run `pagecast feedback setup`.");
+      }
+      return;
+    }
+
+    console.error(`Unknown feedback command: ${subcommand || ""}\n`);
+    usage();
+    process.exit(1);
+  } catch (error) {
+    printError(error, json);
+  }
+}
+
 function usage() {
   console.log(
     [
@@ -294,6 +336,8 @@ function usage() {
       "  pagecast pages status [--json]                        Show Cloudflare Pages configuration",
       "  pagecast pages projects list [--json]                 List Cloudflare Pages projects",
       "  pagecast pages deploy <dir> --project <name> [--json] Deploy a static folder to Pages",
+      "  pagecast feedback setup [--account <id>] [--json]     Set up reactions + view analytics",
+      "  pagecast feedback status [--json]                     Show feedback configuration",
       "  pagecast --help                                       Show this help"
     ].join("\n")
   );
@@ -314,6 +358,11 @@ async function run() {
 
   if (command === "pages") {
     await pages(rest);
+    return;
+  }
+
+  if (command === "feedback") {
+    await feedback(rest);
     return;
   }
 

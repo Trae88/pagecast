@@ -3350,6 +3350,60 @@ async function handleApi(
     return;
   }
 
+  // Provision (or re-provision) the feedback Worker + KV on the user's account.
+  // Creates real Cloudflare resources, so it only runs on this explicit action.
+  if (url.pathname === "/api/feedback/setup" && req.method === "POST") {
+    const body = await readJsonBody(req);
+    const pages = configStore.get().pages;
+    const accountId = normalizeAccountId(body.accountId || pages.accountId || "");
+    const workerPath = path.join(PROJECT_ROOT, "feedback", "worker.js");
+    let workerSource;
+    try {
+      workerSource = await fs.readFile(workerPath, "utf8");
+    } catch {
+      sendError(res, appError("Feedback Worker source not found in the package.", 500));
+      return;
+    }
+    const existing = configStore.get().feedback;
+    const statsToken = existing?.statsToken || randomBytes(24).toString("hex");
+    const dataDir = path.dirname(configStore.configPath);
+    try {
+      const result = await cloudflareAuth.setupFeedback({
+        accountId,
+        workerSource,
+        statsToken,
+        deployDir: path.join(dataDir, "feedback-deploy")
+      });
+      const config = await configStore.updateFeedback(result);
+      sendJson(res, 200, { config, feedback: config.feedback });
+    } catch (error) {
+      sendError(res, error);
+    }
+    return;
+  }
+
+  // Read aggregate stats for a published page back from the feedback Worker.
+  // Proxied through the local server so the stats token never reaches the UI.
+  if (url.pathname === "/api/feedback/stats" && req.method === "GET") {
+    const feedback = configStore.get().feedback;
+    if (!feedback?.url) {
+      sendJson(res, 200, { ok: true, configured: false, stats: null });
+      return;
+    }
+    const slug = url.searchParams.get("slug") || "";
+    const statsUrl =
+      `${feedback.url}/api/v1/stats?slug=${encodeURIComponent(slug)}` +
+      `&token=${encodeURIComponent(feedback.statsToken)}`;
+    try {
+      const response = await fetch(statsUrl);
+      const data = await response.json().catch(() => ({}));
+      sendJson(res, 200, { ok: response.ok, configured: true, ...data });
+    } catch {
+      sendError(res, appError("Could not reach the feedback service.", 502));
+    }
+    return;
+  }
+
   if (url.pathname === "/api/cloudflare/login" && req.method === "POST") {
     await readJsonBody(req);
     await cloudflareAuth.login();

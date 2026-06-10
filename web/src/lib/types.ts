@@ -69,8 +69,36 @@ export interface PagesConfig {
   baseUrl: string;
 }
 
+export interface FeedbackConfig {
+  url: string;
+  statsToken: string;
+  workerName: string;
+  kvId: string;
+}
+
 export interface AppConfig {
   pages: PagesConfig;
+  feedback: FeedbackConfig | null;
+}
+
+export interface FeedbackStats {
+  views: number;
+  reactions: Record<string, number>;
+  countries: Record<string, number>;
+  referrers: Record<string, number>;
+  devices: Record<string, number>;
+}
+
+export interface FeedbackStatsResponse {
+  ok: boolean;
+  configured: boolean;
+  slug?: string;
+  stats: FeedbackStats | null;
+}
+
+export interface FeedbackSetupResponse {
+  config: AppConfig;
+  feedback: FeedbackConfig | null;
 }
 
 export interface StatusResponse {

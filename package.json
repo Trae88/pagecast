@@ -34,6 +34,7 @@
     "src/",
     "public/",
     "plugin/",
+    "feedback/",
     ".codex/skills/publish-report/",
     "llms.txt"
   ],

@@ -363,4 +363,34 @@ export function useRenameSlug() {
   });
 }
 
+export function useFeedbackSetup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (accountId?: string) => api.feedbackSetup(accountId),
+    onSuccess: (data) => {
+      toast.success("Reactions & analytics enabled.");
+      emitActivity({
+        status: "success",
+        title: "Feedback enabled",
+        message: data.feedback?.url ?? undefined
+      });
+      void queryClient.invalidateQueries({ queryKey: STATUS_KEY });
+    },
+    onError: (error) => {
+      const message = errorMessage(error, "Could not set up feedback.");
+      toast.error(message);
+      emitActivity({ status: "error", title: "Feedback setup failed", message });
+    }
+  });
+}
+
+export function useFeedbackStats(slug: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["feedback-stats", slug],
+    queryFn: () => api.feedbackStats(slug as string),
+    enabled: Boolean(slug) && enabled,
+    refetchInterval: 30_000
+  });
+}
+
 export type ReportsResult = ReportsResponse;

@@ -1,5 +1,7 @@
 import type {
   ContentResponse,
+  FeedbackSetupResponse,
+  FeedbackStatsResponse,
   PublishResponse,
   Report,
   ReportResponse,
@@ -164,5 +166,15 @@ export const api = {
     request<unknown>("/api/cloudflare/account", { json: { accountId } }),
 
   cloudflareLogout: () =>
-    request<unknown>("/api/cloudflare/logout", { json: {} })
+    request<unknown>("/api/cloudflare/logout", { json: {} }),
+
+  feedbackSetup: (accountId?: string) =>
+    request<FeedbackSetupResponse>("/api/feedback/setup", {
+      json: accountId ? { accountId } : {}
+    }),
+
+  feedbackStats: (slug: string) =>
+    request<FeedbackStatsResponse>(
+      `/api/feedback/stats?slug=${encodeURIComponent(slug)}`
+    )
 };

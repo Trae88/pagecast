@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { motion } from "framer-motion";
 import {
   DndContext,
   KeyboardSensor,
@@ -61,6 +61,8 @@ import {
   AlertDialogTitle
 } from "@/components/ui/alert-dialog";
 import { CloudflareConnect } from "@/components/cloudflare-connect";
+import { FeedbackCard } from "@/components/feedback-card";
+import { FeedbackStatsPanel } from "@/components/feedback-stats";
 import { AddReport } from "@/components/add-report";
 import { PublicationRow } from "@/components/publication-row";
 import { PreviewDialog } from "@/components/preview-dialog";
@@ -82,7 +84,7 @@ import {
 } from "@/lib/activity";
 import { cn } from "@/lib/utils";
 import { copyToClipboard, relativeTime } from "@/lib/format";
-import type { CloudflareStatus, Report } from "@/lib/types";
+import type { CloudflareStatus, FeedbackConfig, Report } from "@/lib/types";
 
 type ActiveView = "pages" | "settings";
 
@@ -243,6 +245,8 @@ export function App() {
   const projectName = cloudflare?.projectName || "";
   const connected = Boolean(cloudflare?.loggedIn && accountName && projectName);
   const cloudflareReady = !status.isLoading && status.data !== undefined;
+  const feedback = status.data?.config?.feedback ?? null;
+  const feedbackEnabled = Boolean(feedback?.url);
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -285,19 +289,19 @@ export function App() {
           />
 
           <main className="min-w-0 bg-muted/20">
-            <AnimatePresence mode="wait">
-              {activeView === "settings" ? (
+            {activeView === "settings" ? (
                 <motion.div
                   key="settings"
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
                   transition={{ duration: 0.18 }}
                   className="mx-auto flex max-w-5xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8"
                 >
                   <SettingsView
                     cloudflare={cloudflare}
                     activities={activities}
+                    connected={connected}
+                    feedback={feedback}
                   />
                 </motion.div>
               ) : (
@@ -305,7 +309,6 @@ export function App() {
                   key="pages"
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
                   transition={{ duration: 0.18 }}
                   className="mx-auto flex max-w-6xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8"
                 >
@@ -320,6 +323,7 @@ export function App() {
                     publishElapsedMs={elapsedMs}
                     publishSummary={publishSummary}
                     activities={activities}
+                    feedbackEnabled={feedbackEnabled}
                     autoSyncPending={autoSync.isPending}
                     onBuild={(report) => build.mutate(report.id)}
                     onToggleAutoSync={(report, enabled) =>
@@ -334,7 +338,6 @@ export function App() {
                   />
                 </motion.div>
               )}
-            </AnimatePresence>
           </main>
         </div>
       </div>
@@ -707,6 +710,7 @@ function PageWorkspace({
   publishElapsedMs,
   publishSummary,
   activities,
+  feedbackEnabled,
   autoSyncPending,
   onBuild,
   onToggleAutoSync,
@@ -727,6 +731,7 @@ function PageWorkspace({
   publishElapsedMs: number;
   publishSummary: PublishSummary | null;
   activities: ActivityItem[];
+  feedbackEnabled: boolean;
   autoSyncPending: boolean;
   onBuild: (report: Report) => void;
   onToggleAutoSync: (report: Report, enabled: boolean) => void;
@@ -999,6 +1004,13 @@ function PageWorkspace({
           <ActivityPanel activities={activities} />
         </div>
       </section>
+
+      {feedbackEnabled && hasActiveLinks ? (
+        <FeedbackStatsPanel
+          slug={latestSnapshot?.slug || activePublications[0]?.slug || null}
+          enabled={feedbackEnabled}
+        />
+      ) : null}
     </>
   );
 }
@@ -1220,10 +1232,14 @@ function activityColor(status: ActivityStatus) {
 
 function SettingsView({
   cloudflare,
-  activities
+  activities,
+  connected,
+  feedback
 }: {
   cloudflare: CloudflareStatus | undefined;
   activities: ActivityItem[];
+  connected: boolean;
+  feedback: FeedbackConfig | null;
 }) {
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -1231,10 +1247,11 @@ function SettingsView({
         <div>
           <h2 className="text-xl font-semibold tracking-tight">Settings</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Publishing account and project.
+            Publishing account, project, and audience feedback.
           </p>
         </div>
         <CloudflareConnect cloudflare={cloudflare} />
+        <FeedbackCard connected={connected} feedback={feedback} />
       </section>
       <ActivityPanel activities={activities} />
     </div>
