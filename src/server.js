@@ -1699,6 +1699,42 @@ export function createReportStore({
         reports.set(report.id, normalizeReport(report));
       }
     }
+
+    // Group legacy duplicates: before re-publishing reused a report, each publish
+    // of the same file created a separate row. Merge same-source path reports
+    // into one whose Published links hold every version. Idempotent.
+    if (mergeDuplicatePathReports()) {
+      await save();
+    }
+  }
+
+  // Collapse path reports that share a sourcePath into the earliest one,
+  // appending the duplicates' publications (the "versions"). Returns true if any
+  // merge happened so the caller can persist.
+  function mergeDuplicatePathReports() {
+    const canonicalBySource = new Map();
+    let merged = false;
+    for (const report of Array.from(reports.values())) {
+      if (report.kind !== "path" || typeof report.sourcePath !== "string") {
+        continue;
+      }
+      const canonical = canonicalBySource.get(report.sourcePath);
+      if (!canonical) {
+        canonicalBySource.set(report.sourcePath, report);
+        continue;
+      }
+      const seen = new Set(canonical.publications.map((p) => p.token));
+      for (const publication of report.publications) {
+        if (!seen.has(publication.token)) {
+          canonical.publications.push(publication);
+          seen.add(publication.token);
+        }
+      }
+      canonical.updatedAt = nowIso();
+      reports.delete(report.id);
+      merged = true;
+    }
+    return merged;
   }
 
   function listRedirects() {
