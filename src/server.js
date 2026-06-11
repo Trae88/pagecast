@@ -3031,8 +3031,18 @@ export function parseMultipartFiles(body, contentType) {
   return files;
 }
 
+// When the request came from a Chrome extension (adminHandler stashed the
+// reflected origin on res.__corsOrigin), echo it so the extension can read the
+// response. Scoped to chrome-extension:// only — never a wildcard.
+function corsHeadersFor(res) {
+  return res.__corsOrigin
+    ? { "Access-Control-Allow-Origin": res.__corsOrigin, Vary: "Origin" }
+    : {};
+}
+
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
+    ...corsHeadersFor(res),
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store"
   });
@@ -3041,6 +3051,7 @@ function sendJson(res, statusCode, payload) {
 
 function sendText(res, statusCode, message) {
   res.writeHead(statusCode, {
+    ...corsHeadersFor(res),
     "Content-Type": "text/plain; charset=utf-8",
     "Cache-Control": "no-store"
   });
@@ -3383,6 +3394,16 @@ export function isLoopbackHostHeader(hostHeader, bindHost) {
   return false;
 }
 
+// Reflect ONLY a chrome-extension:// Origin (so the Local-to-Public extension can
+// read admin-API responses). Never a wildcard — random sites get no CORS grant,
+// and browser Private-Network-Access already blocks https→127.0.0.1 anyway.
+export function extensionCorsOrigin(originHeader) {
+  if (typeof originHeader === "string" && /^chrome-extension:\/\/[a-z]+$/.test(originHeader)) {
+    return originHeader;
+  }
+  return null;
+}
+
 export function createAdminHandler({
   store,
   configStore,
@@ -3406,6 +3427,26 @@ export function createAdminHandler({
         );
         return;
       }
+
+      // Chrome-extension CORS: stash the reflected origin for the senders, and
+      // answer the preflight directly.
+      const corsOrigin = extensionCorsOrigin(req.headers.origin);
+      if (corsOrigin) {
+        res.__corsOrigin = corsOrigin;
+      }
+      if (req.method === "OPTIONS") {
+        const headers = { "Cache-Control": "no-store" };
+        if (corsOrigin) {
+          headers["Access-Control-Allow-Origin"] = corsOrigin;
+          headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
+          headers["Access-Control-Allow-Headers"] = "Content-Type";
+          headers.Vary = "Origin";
+        }
+        res.writeHead(204, headers);
+        res.end();
+        return;
+      }
+
       const url = new URL(req.url, `http://${req.headers.host || DEFAULT_HOST}`);
 
       if (url.pathname.startsWith("/api/")) {
@@ -3765,6 +3806,75 @@ async function handleApi(
     sendJson(res, 201, {
       report: store.formatReport(report, options),
       publication: store.formatPublication(publication, options)
+    });
+    return;
+  }
+
+  // One-shot "publish this local file and return the URL" for the Chrome
+  // extension. Re-publishing the same file UPDATES the same link in place.
+  if (url.pathname === "/api/publish-local" && req.method === "POST") {
+    const body = await readJsonBody(req);
+    const report = await store.addPath(typeof body.path === "string" ? body.path : "");
+
+    // Deploy (or re-deploy) with the same self-provision retry the snapshot path
+    // uses, so a first-time user publishes without visiting the Cloudflare panel.
+    const deployWith = async (run) => {
+      await deployQueue.enqueue(async () => {
+        try {
+          await run();
+        } catch (error) {
+          const message = stripAnsi(error.message || "");
+          const provisionable =
+            /project.*not.*found|could not find.*project|does not exist|no such project|account|select an account/i.test(
+              message
+            );
+          if (!provisionable) {
+            throw error;
+          }
+          await ensureCloudflarePagesTarget({ cloudflareAuth, configStore });
+          await run();
+        }
+      });
+    };
+
+    // Reuse the latest active snapshot link if one exists (same URL), else publish
+    // new. The stored publication is "active" when it has no revokedAt.
+    const fresh = store.get(report.id);
+    const latest = [...(fresh?.publications || [])]
+      .reverse()
+      .find((p) => !p.revokedAt && p.kind === "snapshot");
+
+    let publication;
+    if (latest) {
+      const match = store.findActivePublication(latest.token);
+      await deployWith(() =>
+        pagesPublisher.syncPublication({
+          report: match.report,
+          publication: match.publication,
+          pagesConfig: configStore.get().pages
+        })
+      );
+      publication = (await store.syncSnapshot(latest.token)).publication;
+    } else {
+      const draft = store.draftPublication(report.id, { kind: "snapshot" });
+      await deployWith(async () => {
+        draft.publication.publicUrl = await pagesPublisher.publish({
+          report: draft.report,
+          publication: draft.publication,
+          pagesConfig: configStore.get().pages
+        });
+      });
+      publication = (await store.commitPublication(report.id, draft.publication)).publication;
+    }
+
+    const formatted = store.formatPublication(publication, options);
+    sendJson(res, 201, {
+      ok: true,
+      url: formatted.publicUrl,
+      slug: formatted.slug,
+      localUrl: formatted.localUrl,
+      updated: Boolean(latest),
+      publication: formatted
     });
     return;
   }

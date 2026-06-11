@@ -175,6 +175,25 @@ npx pagecast pages deploy "/absolute/path/dist" --project pagecasthq --json
 Agents and CI should prefer `--json`. Human terminal output stays concise by
 default. Direct deploys use `main` when `--branch` is not provided.
 
+## Chrome Extension (Local to Public)
+
+When an agent writes an HTML file and opens it as `file:///…/report.html`, the
+bundled Chrome extension adds a one-click **Publish to Pagecast** button. It
+publishes the local file through your running Pagecast server and returns a public
+link; re-publishing the same file updates the same URL.
+
+Install (load unpacked):
+
+1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** →
+   select the `extension/` folder.
+2. Open the extension's **Details** and enable **"Allow access to file URLs"**.
+3. Run `npx pagecast` (connected to Cloudflare), open a local `.html`/`.md` file,
+   click the toolbar icon → **Publish**.
+
+The server must be running (a browser extension can't start it). The admin server
+exposes a `POST /api/publish-local { path }` endpoint and reflects CORS only for
+`chrome-extension://` origins. See `extension/README.md` for details.
+
 ## Use From Codex And Other Agents
 
 Pagecast includes a Codex-native skill and a portable Agent-Skills file. The

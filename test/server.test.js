@@ -24,6 +24,7 @@ import {
   publishGoalProgress,
   stopGoalProgress,
   deployCloudflarePagesSite,
+  extensionCorsOrigin,
   extractPublicUrl,
   isLoopbackHostHeader,
   listCloudflarePagesProjects,
@@ -2823,4 +2824,108 @@ test("config.goal persists and survives pages/feedback updates", async () => {
   assert.equal(after2.goal?.url, "https://pagecast.pages.dev/p/goal/");
 
   await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("POST /api/publish-local publishes a local file and updates the same URL on re-publish", async () => {
+  const tempDir = await makeTempDir();
+  const dataDir = path.join(tempDir, "data");
+  // Keep source files in their own folder (each in a subdir so staging a path
+  // report's sibling tree never recurses into dataDir/pages-site).
+  const filesDir = path.join(tempDir, "files");
+  await fs.mkdir(path.join(filesDir, "a"), { recursive: true });
+  await fs.mkdir(path.join(filesDir, "b"), { recursive: true });
+  const reportPath = path.join(filesDir, "a", "report.html");
+  await fs.writeFile(reportPath, "<h1>Local to public</h1>");
+  const { authSpawn, fakeDeploy } = makeHeadlessFakes();
+  const runtime = await startServers({
+    adminPort: 0,
+    publicPort: 0,
+    dataDir,
+    staticDir: path.resolve("public"),
+    cloudflareAuthSpawnImpl: authSpawn,
+    pagesDeploySpawnImpl: fakeDeploy,
+    cloudflareListTimeoutMs: 1000,
+    pagesDeployTimeoutMs: 1000
+  });
+  const post = (path) =>
+    fetch(`${runtime.adminUrl}/api/publish-local`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path })
+    });
+
+  try {
+    await configurePages(runtime.adminUrl);
+
+    // First publish — a plain absolute path.
+    const r1 = await post(reportPath);
+    assert.equal(r1.status, 201);
+    const d1 = await r1.json();
+    assert.equal(d1.ok, true);
+    assert.match(d1.url, /^https:\/\/team-reports\.pages\.dev\/p\/.+\/$/);
+    assert.equal(d1.updated, false);
+    assert.match(d1.localUrl, /\/p\/.+\/$/);
+
+    // Re-publish the SAME file — same URL/slug, updated:true (no new link).
+    await fs.writeFile(reportPath, "<h1>Local to public v2</h1>");
+    const d2 = await (await post(reportPath)).json();
+    assert.equal(d2.updated, true);
+    assert.equal(d2.url, d1.url);
+    assert.equal(d2.slug, d1.slug);
+
+    // A file:// URL works too (server decodes it).
+    const second = path.join(filesDir, "b", "second.html");
+    await fs.writeFile(second, "<h1>Second</h1>");
+    const d3 = await (await post(pathToFileURL(second).href)).json();
+    assert.match(d3.url, /\/p\/.+\/$/);
+    assert.notEqual(d3.url, d1.url); // different file -> different link
+
+    // Negatives: missing file -> 404, unsupported type -> 400.
+    assert.equal((await post(path.join(filesDir, "a", "nope.html"))).status, 404);
+    const txt = path.join(filesDir, "b", "note.txt");
+    await fs.writeFile(txt, "x");
+    assert.equal((await post(txt)).status, 400);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("admin server reflects CORS only for chrome-extension origins", async () => {
+  assert.equal(extensionCorsOrigin("chrome-extension://abcdefghij"), "chrome-extension://abcdefghij");
+  assert.equal(extensionCorsOrigin("https://evil.com"), null);
+  assert.equal(extensionCorsOrigin(undefined), null);
+
+  const tempDir = await makeTempDir();
+  const dataDir = path.join(tempDir, "data");
+  const { authSpawn, fakeDeploy } = makeHeadlessFakes();
+  const runtime = await startServers({
+    adminPort: 0,
+    publicPort: 0,
+    dataDir,
+    staticDir: path.resolve("public"),
+    cloudflareAuthSpawnImpl: authSpawn,
+    pagesDeploySpawnImpl: fakeDeploy,
+    cloudflareListTimeoutMs: 1000
+  });
+  try {
+    const ext = await fetch(`${runtime.adminUrl}/api/status`, {
+      headers: { Origin: "chrome-extension://abcdefghij" }
+    });
+    assert.equal(ext.headers.get("access-control-allow-origin"), "chrome-extension://abcdefghij");
+
+    const evil = await fetch(`${runtime.adminUrl}/api/status`, {
+      headers: { Origin: "https://evil.com" }
+    });
+    assert.equal(evil.headers.get("access-control-allow-origin"), null);
+
+    const pre = await fetch(`${runtime.adminUrl}/api/publish-local`, {
+      method: "OPTIONS",
+      headers: { Origin: "chrome-extension://abcdefghij" }
+    });
+    assert.equal(pre.status, 204);
+    assert.equal(pre.headers.get("access-control-allow-origin"), "chrome-extension://abcdefghij");
+    assert.match(pre.headers.get("access-control-allow-methods") || "", /POST/);
+  } finally {
+    await runtime.close();
+  }
 });

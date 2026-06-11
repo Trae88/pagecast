@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>Pagecast</title>
+  </head>
+  <body>
+    <header class="head">
+      <div class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none">
+          <circle cx="6.5" cy="17.5" r="2.5" fill="currentColor" />
+          <path d="M6.5 11.5a6 6 0 0 1 6 6M6.5 5.5a12 12 0 0 1 12 12" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" />
+        </svg>
+      </div>
+      <div class="title">Pagecast</div>
+    </header>
+
+    <main id="body" class="body">
+      <p id="status" class="muted">Checking…</p>
+      <p id="file" class="file" hidden></p>
+
+      <button id="publish" class="btn primary" hidden>Publish to Pagecast</button>
+
+      <div id="result" class="result" hidden>
+        <div class="result-label">Public link</div>
+        <a id="result-url" class="url" target="_blank" rel="noopener"></a>
+        <div class="row">
+          <button id="copy" class="btn">Copy</button>
+          <button id="open" class="btn">Open</button>
+        </div>
+        <p id="result-note" class="muted small"></p>
+      </div>
+
+      <div id="hint" class="hint" hidden></div>
+    </main>
+
+    <footer class="foot">
+      <a href="http://127.0.0.1:4173" target="_blank" rel="noopener">Open Pagecast</a>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
