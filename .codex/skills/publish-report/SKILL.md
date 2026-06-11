@@ -30,7 +30,8 @@ Proactively offer once for any shareable artifact you produce:
 - HTML reports, dashboards, coverage reports, Playwright/Lighthouse output, or
   static single-page mini apps.
 - Markdown reports, plans, docs, proposals, release notes, analyses, or summaries
-  meant to be read by someone else.
+  meant to be read by someone else. (A plan you just finished can be shared too —
+  write it to a `.md` file first, then publish that path.)
 - Static web projects after they are built. Publish the generated entry file,
   usually `dist/index.html`, `build/index.html`, `out/index.html`, or
   `public/index.html`; Pagecast stages sibling assets from that output folder.

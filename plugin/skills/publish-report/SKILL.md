@@ -56,6 +56,11 @@ npx pagecast publish "/absolute/path/to/file.md" --json
 (HTML and Markdown both work — Markdown is rendered to a clean page. If `pagecast`
 is installed globally/in the project, `pagecast publish "<path>" --json` is the same.)
 
+**Publishing a plan** (e.g. after plan mode): the plan lives in your context, not
+a file yet. If the user wants it shared, first write the plan markdown to a file
+(e.g. `./plan.md`), then publish that path. Don't overwrite an existing file the
+user cares about — pick a clear new name.
+
 For static web projects that should get a new shareable `/p/<token>/` link,
 build first and publish the generated entry file:
 
