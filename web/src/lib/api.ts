@@ -1,4 +1,5 @@
 import type {
+  ConfigResponse,
   ContentResponse,
   FeedbackSetupResponse,
   FeedbackStatsResponse,
@@ -164,6 +165,17 @@ export const api = {
       `/api/publications/${encodeURIComponent(token)}/slug`,
       { method: "PUT", json: { slug } }
     ),
+
+  setExpiry: (token: string, expires: string) =>
+    request<PublishResponse>(
+      `/api/publications/${encodeURIComponent(token)}/expiry`,
+      { json: { expires } }
+    ),
+
+  setDefaultExpiry: (value: string) =>
+    request<ConfigResponse>("/api/config/expiry", {
+      json: { default: value }
+    }),
 
   cloudflareConnect: () =>
     request<unknown>("/api/cloudflare/connect", { json: {} }),

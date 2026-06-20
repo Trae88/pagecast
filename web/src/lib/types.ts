@@ -12,6 +12,10 @@ export interface Publication {
   createdAt: string;
   updatedAt: string;
   revokedAt: string | null;
+  // Absolute link expiry (epoch ms) or null = Never/permanent.
+  expiresAt: number | null;
+  // True once the expiry has passed; the link reads as inactive (edge 410).
+  expired: boolean;
   localUrl: string | null;
   publicUrl: string | null;
 }
@@ -81,6 +85,13 @@ export interface AppConfig {
   pages: PagesConfig;
   feedback: FeedbackConfig | null;
   badge: boolean;
+  // Default link lifetime for new publishes ("30d" out of the box, "never" =
+  // permanent). A per-publish expiry overrides it.
+  defaultExpiry: string;
+}
+
+export interface ConfigResponse {
+  config: AppConfig;
 }
 
 export interface FeedbackStats {

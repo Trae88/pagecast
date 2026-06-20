@@ -41,6 +41,7 @@ const VALUE_FLAGS = new Set([
   "account",
   "account-id",
   "branch",
+  "expires",
   "label",
   "mode",
   "output",
@@ -213,6 +214,7 @@ async function publish(args) {
   const passwordProvided = Object.prototype.hasOwnProperty.call(parsed.options, "password");
   const password = optionValue(parsed, "password");
   const disableProtection = parsed.flags.has("no-password");
+  const expires = optionValue(parsed, "expires"); // e.g. 7d, 12h, never (empty = default)
   const reportPath = parsed.positionals[0];
 
   if (passwordProvided && disableProtection) {
@@ -233,6 +235,7 @@ async function publish(args) {
       label,
       password,
       disableProtection,
+      expires,
       dataDir
     });
     if (json) {
@@ -242,6 +245,11 @@ async function publish(args) {
       if (result.passwordProtected) {
         console.log("Password protection: on (visitors must enter the password).");
       }
+      console.log(
+        result.expiresAt
+          ? `Expires: ${new Date(result.expiresAt).toISOString()}`
+          : "Expires: never"
+      );
     }
   } catch (error) {
     printError(error, json);
@@ -411,7 +419,8 @@ function usage() {
     [
       "Usage:",
       "  pagecast [serve]                                      Start the local app and open the admin UI",
-      "  pagecast publish <path> [--password <pw>|--no-password] [--json]  Publish an HTML/Markdown snapshot",
+      "  pagecast publish <path> [--password <pw>|--no-password] [--expires <7d|12h|never>] [--json]",
+      "                                                        Publish an HTML/Markdown snapshot",
       "  pagecast publish site <dir> --project <name> [--json] Deploy a static folder to Pages",
       "  pagecast pages setup [--project <name>] [--json]      Connect and prepare Cloudflare Pages",
       "  pagecast pages status [--json]                        Show Cloudflare Pages configuration",

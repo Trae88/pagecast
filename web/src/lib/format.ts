@@ -13,6 +13,41 @@ export function relativeTime(iso: string | null | undefined): string {
   return new Date(iso).toLocaleDateString();
 }
 
+// Shared expiry presets for the per-link picker and the default-expiry setting.
+// Values are server duration strings (see parseDuration in src/server.js).
+export const EXPIRY_PRESETS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "6h", label: "6 hours" },
+  { value: "12h", label: "12 hours" },
+  { value: "1d", label: "1 day" },
+  { value: "2d", label: "2 days" },
+  { value: "7d", label: "7 days" },
+  { value: "30d", label: "30 days" },
+  { value: "never", label: "Never" }
+];
+
+// Human label for a link's expiry state from its absolute expiresAt (epoch ms).
+// null = permanent. A relative "Expires in …" reads best while there's time
+// left; an absolute date is the fallback further out.
+export function expiryLabel(
+  expiresAt: number | null | undefined,
+  expired?: boolean
+): string {
+  if (expired) return "Expired";
+  if (expiresAt == null) return "Never";
+  const remaining = expiresAt - Date.now();
+  if (remaining <= 0) return "Expired";
+  const minutes = Math.round(remaining / 60_000);
+  if (minutes < 60) return `Expires in ${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `Expires in ${hours}h`;
+  const days = Math.round(hours / 24);
+  if (days < 14) return `Expires in ${days} days`;
+  return `Expires ${new Date(expiresAt).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric"
+  })}`;
+}
+
 export async function copyToClipboard(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {
