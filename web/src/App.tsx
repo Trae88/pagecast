@@ -65,6 +65,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { CloudflareConnect } from "@/components/cloudflare-connect";
 import { FeedbackCard } from "@/components/feedback-card";
+import { DefaultExpiryCard } from "@/components/default-expiry-card";
 import { FeedbackStatsPanel } from "@/components/feedback-stats";
 import { AddReport } from "@/components/add-report";
 import { PublicationRow } from "@/components/publication-row";
@@ -307,6 +308,7 @@ export function App() {
                     activities={activities}
                     connected={connected}
                     feedback={feedback}
+                    defaultExpiry={status.data?.config?.defaultExpiry}
                   />
                 </motion.div>
               ) : (
@@ -1342,12 +1344,14 @@ function SettingsView({
   cloudflare,
   activities,
   connected,
-  feedback
+  feedback,
+  defaultExpiry
 }: {
   cloudflare: CloudflareStatus | undefined;
   activities: ActivityItem[];
   connected: boolean;
   feedback: FeedbackConfig | null;
+  defaultExpiry: string | undefined;
 }) {
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -1355,10 +1359,11 @@ function SettingsView({
         <div>
           <h2 className="text-xl font-semibold tracking-tight">Settings</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Publishing account, project, and audience feedback.
+            Publishing account, project, link expiry, and audience feedback.
           </p>
         </div>
         <CloudflareConnect cloudflare={cloudflare} />
+        <DefaultExpiryCard defaultExpiry={defaultExpiry} />
         <FeedbackCard connected={connected} feedback={feedback} />
       </section>
       <ActivityPanel activities={activities} />

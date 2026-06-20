@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   Check,
+  Clock,
   Copy,
   Link2,
   Loader2,
@@ -11,11 +12,23 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger
+} from "@/components/ui/select";
 import { toast } from "sonner";
-import { copyToClipboard, relativeTime } from "@/lib/format";
+import {
+  EXPIRY_PRESETS,
+  copyToClipboard,
+  expiryLabel,
+  relativeTime
+} from "@/lib/format";
 import {
   useRenameSlug,
   useRevokePublication,
+  useSetExpiry,
   useSyncPublication
 } from "@/hooks/use-pagecast";
 import type { Publication } from "@/lib/types";
@@ -28,6 +41,7 @@ export function PublicationRow({ publication }: PublicationRowProps) {
   const rename = useRenameSlug();
   const sync = useSyncPublication();
   const revoke = useRevokePublication();
+  const setExpiry = useSetExpiry();
 
   const [editing, setEditing] = useState(false);
   const [slugDraft, setSlugDraft] = useState(publication.slug);
@@ -120,8 +134,11 @@ export function PublicationRow({ publication }: PublicationRowProps) {
             <span className="truncate font-mono text-xs">
               {publication.slug}
             </span>
-            <Badge variant="muted" className="shrink-0 px-1.5 py-0 text-[10px]">
-              published
+            <Badge
+              variant={publication.expired ? "destructive" : "muted"}
+              className="shrink-0 px-1.5 py-0 text-[10px]"
+            >
+              {publication.expired ? "expired" : "published"}
             </Badge>
             {isSnapshot ? (
               <Button
@@ -137,9 +154,46 @@ export function PublicationRow({ publication }: PublicationRowProps) {
           </div>
         )}
         {!editing ? (
-          <p className="truncate text-[11px] text-muted-foreground">
-            Last synced {relativeTime(publication.updatedAt)}
-          </p>
+          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+            <span className="truncate">
+              Last synced {relativeTime(publication.updatedAt)}
+            </span>
+            {isSnapshot ? (
+              <>
+                <span aria-hidden="true">·</span>
+                <Select
+                  value=""
+                  disabled={setExpiry.isPending}
+                  onValueChange={(value) =>
+                    setExpiry.mutate({ token: publication.token, expires: value })
+                  }
+                >
+                  <SelectTrigger
+                    className="h-6 w-auto gap-1 border-0 bg-transparent px-1 py-0 text-[11px] shadow-none focus:ring-0 [&>span]:line-clamp-none"
+                    aria-label="Set link expiry"
+                  >
+                    <Clock className="h-3 w-3 shrink-0" />
+                    <span
+                      className={
+                        publication.expired ? "text-destructive" : undefined
+                      }
+                    >
+                      {setExpiry.isPending
+                        ? "Updating…"
+                        : expiryLabel(publication.expiresAt, publication.expired)}
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    {EXPIRY_PRESETS.map((preset) => (
+                      <SelectItem key={preset.value} value={preset.value}>
+                        {preset.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </>
+            ) : null}
+          </div>
         ) : null}
       </div>
 

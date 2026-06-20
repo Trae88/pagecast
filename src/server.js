@@ -339,6 +339,47 @@ function normalizeGoal(goal) {
   };
 }
 
+// Parse a human duration ("12h", "7d", "30d", "never") into milliseconds, or
+// null for never / permanent. Throws appError(400) on malformed input.
+export function parseDuration(value) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw || raw === "never" || raw === "none" || raw === "permanent") {
+    return null;
+  }
+  const match = /^(\d+)\s*(h|d|m)$/.exec(raw);
+  const n = match ? Number(match[1]) : NaN;
+  if (!match || !Number.isFinite(n) || n <= 0) {
+    throw appError(`Invalid duration "${value}". Use e.g. 12h, 2d, 30d, or never.`, 400);
+  }
+  const unitMs = match[2] === "h" ? 3_600_000 : match[2] === "m" ? 60_000 : 86_400_000;
+  return n * unitMs;
+}
+
+// Resolve the absolute expiry (epoch ms, or null = never) for a publish, given
+// an optional explicit duration and the configured default.
+export function resolveExpiresAt({ expires, defaultExpiry } = {}) {
+  const hasExplicit = expires !== undefined && expires !== null && String(expires).trim() !== "";
+  const ms = parseDuration(hasExplicit ? expires : defaultExpiry);
+  return ms === null ? null : Date.now() + ms;
+}
+
+// Validate a configured default-expiry string; fall back to "30d" on garbage.
+function normalizeDefaultExpiry(value) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) {
+    return "30d";
+  }
+  if (raw === "never" || raw === "none" || raw === "permanent") {
+    return "never";
+  }
+  try {
+    parseDuration(raw);
+    return raw;
+  } catch {
+    return "30d";
+  }
+}
+
 function normalizeConfig(config = {}) {
   const projectName = normalizePagesProjectName(
     config.pages?.projectName || DEFAULT_PAGES_PROJECT_NAME
@@ -360,6 +401,9 @@ function normalizeConfig(config = {}) {
     badge: config.badge !== false,
     // The currently-published live goal-progress page (or null).
     goal: normalizeGoal(config.goal),
+    // Default link lifetime for new publishes ("30d" out of the box, "never" =
+    // permanent). Configurable; a per-publish --expires overrides it.
+    defaultExpiry: normalizeDefaultExpiry(config.defaultExpiry),
     // HMAC secret for signing edge password-gate session cookies. Generated once
     // (see createConfigStore.init) and kept stable so cookies survive redeploys;
     // preserved here so partial config rebuilds don't drop it.
@@ -1038,6 +1082,7 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
       feedback: config.feedback,
       badge: config.badge,
       goal: config.goal,
+      defaultExpiry: config.defaultExpiry,
       authCookieSecret: config.authCookieSecret
     });
     await save();
@@ -1046,6 +1091,12 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
 
   async function setBadge(enabled) {
     config = normalizeConfig({ ...config, badge: enabled !== false });
+    await save();
+    return get();
+  }
+
+  async function setDefaultExpiry(value) {
+    config = normalizeConfig({ ...config, defaultExpiry: value });
     await save();
     return get();
   }
@@ -1061,6 +1112,7 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
       pages: config.pages,
       badge: config.badge,
       goal: config.goal,
+      defaultExpiry: config.defaultExpiry,
       authCookieSecret: config.authCookieSecret,
       feedback: feedback === null ? null : { ...(config.feedback || {}), ...feedback }
     });
@@ -1072,6 +1124,7 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
     init,
     setBadge,
     setGoal,
+    setDefaultExpiry,
     get,
     getPublicConfig,
     updatePages,
@@ -1197,13 +1250,16 @@ export function createCloudflarePagesPublisher({
     await writeAuthAssets();
   }
 
-  // (Re)generate the edge password gate on every deploy. When any publication is
-  // protected, write functions/_middleware.js (the Basic-auth gate + baked hash
-  // manifest) and a _routes.json that scopes the Function to protected prefixes
-  // only. When none are protected, remove both so the site stays purely static.
+  // (Re)generate the edge gate on every deploy. When any publication needs one —
+  // password-protected and/or expiring — write functions/_middleware.js (the
+  // gate + baked manifest) and a _routes.json scoping the Function to those
+  // prefixes only. When none need it, remove both so the site stays pure-static.
   async function writeAuthAssets() {
     const manifest = (getProtectedPublications() || []).filter(
-      (entry) => entry && entry.slug && isValidPasswordHash(entry)
+      (entry) =>
+        entry &&
+        entry.slug &&
+        (isValidPasswordHash(entry) || (Number.isFinite(entry.expiresAt) && entry.expiresAt > 0))
     );
     const functionsDir = path.join(siteRoot, "functions");
     const middlewarePath = path.join(functionsDir, "_middleware.js");
@@ -1916,7 +1972,10 @@ export function createReportStore({
   function formatPublication(publication, { localPublicBaseUrl } = {}) {
     const slug = publication.slug || publication.token;
     const suffix = `/p/${encodeURIComponent(slug)}/`;
-    const active = !publication.revokedAt;
+    const expiresAt = typeof publication.expiresAt === "number" && publication.expiresAt > 0 ? publication.expiresAt : null;
+    const expired = expiresAt !== null && Date.now() > expiresAt;
+    // Expired links read as inactive (the edge serves a 410), like revoked ones.
+    const active = !publication.revokedAt && !expired;
     const kind = publication.kind || "snapshot";
     return {
       token: publication.token,
@@ -1927,6 +1986,8 @@ export function createReportStore({
       createdAt: publication.createdAt,
       updatedAt: publication.updatedAt || publication.createdAt,
       revokedAt: publication.revokedAt || null,
+      expiresAt,
+      expired,
       localUrl: active && localPublicBaseUrl ? joinUrl(localPublicBaseUrl, suffix) : null,
       publicUrl: active && kind === "snapshot" ? publication.publicUrl : null
     };
@@ -2248,7 +2309,7 @@ export function createReportStore({
     return `v${(report.publications || []).length + 1}`;
   }
 
-  function draftPublication(id, { label, kind = "snapshot", publicUrl = null } = {}) {
+  function draftPublication(id, { label, kind = "snapshot", publicUrl = null, expiresAt = null } = {}) {
     const report = reports.get(id);
     if (!report) {
       throw appError("Report was not found.", 404);
@@ -2265,7 +2326,9 @@ export function createReportStore({
       publicUrl: kind === "snapshot" ? publicUrl : null,
       createdAt,
       updatedAt: createdAt,
-      revokedAt: null
+      revokedAt: null,
+      // Absolute expiry (epoch ms) or null = never. Enforced at the edge.
+      expiresAt: typeof expiresAt === "number" && expiresAt > 0 ? expiresAt : null
     };
 
     return { report, publication };
@@ -2374,18 +2437,43 @@ export function createReportStore({
   // The set of currently-live protected slugs and their password hashes, used to
   // regenerate the edge auth middleware on every deploy. One report's hash maps
   // to every active snapshot slug of that report.
+  // Slugs that need an edge Function — password-protected and/or expiring. Note:
+  // expired (but not revoked) publications stay in the manifest so the middleware
+  // keeps returning 410 rather than silently serving the still-deployed content.
   function protectedPublicationManifest() {
     const manifest = [];
     for (const report of reports.values()) {
-      if (!report.passwordProtected || !isValidPasswordHash(report.passwordHash)) {
-        continue;
-      }
+      const protectedReport = report.passwordProtected && isValidPasswordHash(report.passwordHash);
       for (const publication of activeSnapshotPublications(report)) {
-        const slug = publication.slug || publication.token;
-        manifest.push({ slug, ...report.passwordHash });
+        const hasExpiry = typeof publication.expiresAt === "number" && publication.expiresAt > 0;
+        if (!protectedReport && !hasExpiry) {
+          continue;
+        }
+        const entry = { slug: publication.slug || publication.token };
+        if (protectedReport) {
+          Object.assign(entry, report.passwordHash);
+        }
+        if (hasExpiry) {
+          entry.expiresAt = publication.expiresAt;
+        }
+        manifest.push(entry);
       }
     }
     return manifest;
+  }
+
+  // Set (or clear, with null) the expiry of an existing publication. Caller
+  // redeploys active snapshots afterwards so the edge manifest refreshes.
+  async function setPublicationExpiry(token, expiresAt) {
+    const match = findPublication(token);
+    if (!match) {
+      throw appError("Published link was not found.", 404);
+    }
+    match.publication.expiresAt = typeof expiresAt === "number" && expiresAt > 0 ? expiresAt : null;
+    match.publication.updatedAt = nowIso();
+    match.report.updatedAt = match.publication.updatedAt;
+    await save();
+    return match;
   }
 
   // Bump a snapshot's updatedAt (and its report's) after a successful same-URL
@@ -2758,6 +2846,7 @@ export function createReportStore({
     findActivePublicationBySlug,
     activeSnapshotPublications,
     protectedPublicationManifest,
+    setPublicationExpiry,
     revokePublication,
     revokeAll,
     syncSnapshot,
@@ -3709,8 +3798,22 @@ async function handleApi(
   // Toggle the "Published with Pagecast" badge on shared pages (white-label off).
   if (url.pathname === "/api/config/badge" && req.method === "POST") {
     const body = await readJsonBody(req);
-    const config = await configStore.setBadge(body.enabled !== false);
-    sendJson(res, 200, { config });
+    await configStore.setBadge(body.enabled !== false);
+    // getPublicConfig (not the setter's full return) so authCookieSecret never
+    // reaches the client.
+    sendJson(res, 200, { config: configStore.getPublicConfig() });
+    return;
+  }
+
+  if (url.pathname === "/api/config/expiry" && req.method === "POST") {
+    const body = await readJsonBody(req);
+    const value = String(body.default ?? body.defaultExpiry ?? "").trim();
+    // Fail loud on malformed input (never/empty are allowed = permanent).
+    if (value && !/^(never|none|permanent)$/i.test(value)) {
+      parseDuration(value);
+    }
+    await configStore.setDefaultExpiry(value);
+    sendJson(res, 200, { config: configStore.getPublicConfig() });
     return;
   }
 
@@ -3903,41 +4006,57 @@ async function handleApi(
     if (sourceReport?.kind === "folder" && sourceReport.buildCommand) {
       await store.buildReport(id);
     }
-    const draft = store.draftPublication(id, {
-      label: body.label,
-      kind: "snapshot"
-    });
-    await deployQueue.enqueue(async () => {
-      try {
-        draft.publication.publicUrl = await pagesPublisher.publish({
-          report: draft.report,
-          publication: draft.publication,
-          pagesConfig: configStore.get().pages
-        });
-      } catch (error) {
-        // Self-provision and retry once when the failure is a missing Pages
-        // project or account, so a snapshot can publish without first visiting
-        // the Cloudflare panel.
-        const message = stripAnsi(error.message || "");
-        const provisionable =
-          /project.*not.*found|could not find.*project|does not exist|no such project|account|select an account/i.test(
-            message
-          );
-        if (!provisionable) {
-          throw error;
+    const expiresAt = resolveExpiresAt({ expires: body.expires, defaultExpiry: configStore.get().defaultExpiry });
+    const draft = store.draftPublication(id, { label: body.label, kind: "snapshot", expiresAt });
+    // An expiring or password-protected snapshot needs an edge gate built from
+    // COMMITTED snapshots, so commit before the first deploy (else it ships
+    // ungated until a later redeploy). Deploy in place (syncPublication) and
+    // revoke on failure. Plain permanent links keep the publish-then-commit path.
+    const gated = Boolean(expiresAt) || store.get(id).passwordProtected === true;
+    if (gated) {
+      await store.commitPublication(id, draft.publication);
+    }
+    const deployOnce = () =>
+      (gated ? pagesPublisher.syncPublication : pagesPublisher.publish)({
+        report: store.get(id),
+        publication: draft.publication,
+        pagesConfig: configStore.get().pages
+      });
+    try {
+      await deployQueue.enqueue(async () => {
+        try {
+          draft.publication.publicUrl = await deployOnce();
+        } catch (error) {
+          // Self-provision and retry once when the failure is a missing Pages
+          // project or account, so a snapshot can publish without first visiting
+          // the Cloudflare panel.
+          const message = stripAnsi(error.message || "");
+          const provisionable =
+            /project.*not.*found|could not find.*project|does not exist|no such project|account|select an account/i.test(
+              message
+            );
+          if (!provisionable) {
+            throw error;
+          }
+          await ensureCloudflarePagesTarget({ cloudflareAuth, configStore });
+          draft.publication.publicUrl = await deployOnce();
         }
-        await ensureCloudflarePagesTarget({ cloudflareAuth, configStore });
-        draft.publication.publicUrl = await pagesPublisher.publish({
-          report: draft.report,
-          publication: draft.publication,
-          pagesConfig: configStore.get().pages
-        });
+      });
+    } catch (error) {
+      if (gated) {
+        await store.revokePublication(draft.publication.token).catch(() => {});
       }
-    });
-    const { report, publication } = await store.commitPublication(id, draft.publication);
+      throw error;
+    }
+    if (gated) {
+      await store.syncSnapshot(draft.publication.token);
+    } else {
+      await store.commitPublication(id, draft.publication);
+    }
+    const fresh = store.findPublication(draft.publication.token);
     sendJson(res, 201, {
-      report: store.formatReport(report, options),
-      publication: store.formatPublication(publication, options)
+      report: store.formatReport(fresh.report, options),
+      publication: store.formatPublication(fresh.publication, options)
     });
     return;
   }
@@ -3988,7 +4107,10 @@ async function handleApi(
       );
       publication = (await store.syncSnapshot(latest.token)).publication;
     } else {
-      const draft = store.draftPublication(report.id, { kind: "snapshot" });
+      const draft = store.draftPublication(report.id, {
+        kind: "snapshot",
+        expiresAt: resolveExpiresAt({ expires: body.expires, defaultExpiry: configStore.get().defaultExpiry })
+      });
       await deployWith(async () => {
         draft.publication.publicUrl = await pagesPublisher.publish({
           report: draft.report,
@@ -4052,6 +4174,52 @@ async function handleApi(
     sendJson(res, 200, {
       report: store.formatReport(report, options),
       publication: store.formatPublication(publication, options)
+    });
+    return;
+  }
+
+  const expiryMatch = /^\/api\/publications\/([^/]+)\/expiry$/.exec(url.pathname);
+  if (expiryMatch && req.method === "POST") {
+    const body = await readJsonBody(req);
+    const token = decodeURIComponent(expiryMatch[1]);
+    const existing = store.findActivePublication(token);
+    if (!existing) {
+      throw appError("Published link was not found.", 404);
+    }
+    if (existing.publication.kind !== "snapshot") {
+      throw appError("Only snapshot publications can expire.", 400);
+    }
+    const expiresAt = resolveExpiresAt({ expires: body.expires, defaultExpiry: configStore.get().defaultExpiry });
+    await store.setPublicationExpiry(token, expiresAt);
+    // Redeploy so the edge middleware manifest reflects the new expiry.
+    await deployQueue.enqueue(async () => {
+      try {
+        await pagesPublisher.syncPublication({
+          report: existing.report,
+          publication: existing.publication,
+          pagesConfig: configStore.get().pages
+        });
+      } catch (error) {
+        const message = stripAnsi(error.message || "");
+        const provisionable =
+          /project.*not.*found|could not find.*project|does not exist|no such project|account|select an account/i.test(
+            message
+          );
+        if (!provisionable) {
+          throw error;
+        }
+        await ensureCloudflarePagesTarget({ cloudflareAuth, configStore });
+        await pagesPublisher.syncPublication({
+          report: existing.report,
+          publication: existing.publication,
+          pagesConfig: configStore.get().pages
+        });
+      }
+    });
+    const refreshed = store.findPublication(token);
+    sendJson(res, 200, {
+      report: store.formatReport(refreshed.report, options),
+      publication: store.formatPublication(refreshed.publication, options)
     });
     return;
   }
@@ -4703,6 +4871,7 @@ export async function publishReportSnapshot({
   label,
   password,
   disableProtection = false,
+  expires,
   dataDir = path.join(PROJECT_ROOT, ".pagecast"),
   cloudflareAuthSpawnImpl = spawn,
   pagesDeploySpawnImpl = spawn,
@@ -4752,12 +4921,16 @@ export async function publishReportSnapshot({
     await store.setPasswordProtection(report.id, { enabled: false });
   }
 
-  const draft = store.draftPublication(report.id, { label, kind: "snapshot" });
-  if (store.get(report.id).passwordProtected) {
-    // Commit BEFORE deploying so the snapshot is in the protected manifest from
-    // the very first deploy — there is no window where the page is served
-    // without its password gate. If the deploy fails, revoke the just-committed
-    // snapshot so we don't leave a dangling active publication with no URL.
+  const draft = store.draftPublication(report.id, {
+    label,
+    kind: "snapshot",
+    expiresAt: resolveExpiresAt({ expires, defaultExpiry: configStore.get().defaultExpiry })
+  });
+  // A snapshot that's password-protected OR expiring needs an edge gate, whose
+  // manifest is built from COMMITTED snapshots — so commit before the first
+  // deploy (no window where the page is served ungated). Revoke on deploy
+  // failure so we don't leave a dangling active publication with no URL.
+  if (store.get(report.id).passwordProtected || draft.publication.expiresAt) {
     await store.commitPublication(report.id, draft.publication);
     try {
       draft.publication.publicUrl = await pagesPublisher.syncPublication({
@@ -4785,7 +4958,8 @@ export async function publishReportSnapshot({
     label: draft.publication.label,
     projectName: configStore.get().pages.projectName,
     reportId: report.id,
-    passwordProtected: store.get(report.id).passwordProtected === true
+    passwordProtected: store.get(report.id).passwordProtected === true,
+    expiresAt: draft.publication.expiresAt || null
   };
 }
 

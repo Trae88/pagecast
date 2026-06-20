@@ -315,6 +315,47 @@ export function useRevokePublication() {
   });
 }
 
+// Per-link expiry change. Returns the publish response shape (report +
+// publication), so reports must be refreshed. Surfaces the server's 400
+// (invalid duration) message verbatim.
+export function useSetExpiry() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ token, expires }: { token: string; expires: string }) =>
+      api.setExpiry(token, expires),
+    onSuccess: () => {
+      toast.success("Link expiry updated.");
+      emitActivity({ status: "success", title: "Link expiry updated" });
+      invalidateReports(queryClient);
+    },
+    onError: (error) => {
+      const message = errorMessage(error, "Could not update link expiry.");
+      toast.error(message);
+      emitActivity({ status: "error", title: "Link expiry failed", message });
+    }
+  });
+}
+
+// App-level default link lifetime. The new default lives on the config in the
+// status query, so that's what must be refreshed.
+export function useSetDefaultExpiry() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (value: string) => api.setDefaultExpiry(value),
+    onSuccess: () => {
+      toast.success("Default expiry updated.");
+      emitActivity({ status: "success", title: "Default expiry updated" });
+      void queryClient.invalidateQueries({ queryKey: STATUS_KEY });
+      invalidateReports(queryClient);
+    },
+    onError: (error) => {
+      const message = errorMessage(error, "Could not update default expiry.");
+      toast.error(message);
+      emitActivity({ status: "error", title: "Default expiry failed", message });
+    }
+  });
+}
+
 export function useSaveContent() {
   const queryClient = useQueryClient();
   return useMutation({
