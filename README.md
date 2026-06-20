@@ -3,7 +3,7 @@
 Preview local HTML reports, Markdown docs, and static mini apps, then publish
 them to shareable Cloudflare Pages URLs — from the terminal or your coding agent.
 
-**Live app:** <https://pagecasthq.pages.dev/>
+**Feature HTML:** <https://pagecasthq.pages.dev/>
 
 <p align="center">
   <img src="media/admin.png" alt="Pagecast admin UI: published reports with per-page password protection" width="900">
