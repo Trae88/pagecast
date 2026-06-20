@@ -152,6 +152,26 @@ test("middleware rejects a wrong password and accepts the right one (with Set-Co
   assert.match(ok.headers.get("Set-Cookie") || "", /^pc_demo=.*HttpOnly/);
 });
 
+test("middleware accepts a non-ASCII password (UTF-8 byte parity with the Node hash)", async () => {
+  const pw = "pÄsswörd—✓";
+  const entry = makePasswordHash(pw, { salt: "0123456789abcdef0123456789abcdef" });
+  const { onRequest } = await loadMiddleware([{ slug: "demo", ...entry }], {
+    cookieSecret: "00".repeat(32)
+  });
+  let served = false;
+  const ok = await onRequest({
+    request: new Request("https://x.pages.dev/p/demo/index.html", {
+      headers: { Authorization: basic(pw) }
+    }),
+    next: async () => {
+      served = true;
+      return new Response("SECRET", { status: 200 });
+    }
+  });
+  assert.equal(served, true, "correct non-ASCII password should authenticate");
+  assert.equal(ok.status, 200);
+});
+
 test("middleware honors a valid signed cookie and ignores a forged one", async () => {
   const entry = makePasswordHash("secret", { salt: "0123456789abcdef0123456789abcdef" });
   const { onRequest } = await loadMiddleware([{ slug: "demo", ...entry }], {

@@ -162,7 +162,14 @@ function constantTimeEqual(a, b) {
 }
 
 async function hashPassword(password, saltHex, iterations) {
-  const keyMaterial = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
+  // password is the raw byte string from atob() (each char is one credential
+  // byte, 0-255). Browsers send Basic-auth credentials UTF-8 encoded, so these
+  // ARE the UTF-8 bytes — take them as-is. Re-encoding via TextEncoder would
+  // double-encode any byte > 127, so a non-ASCII password would never match the
+  // Node-side pbkdf2Sync(Buffer.from(pw, "utf8")) hash.
+  const pwBytes = new Uint8Array(password.length);
+  for (let i = 0; i < password.length; i += 1) pwBytes[i] = password.charCodeAt(i) & 0xff;
+  const keyMaterial = await crypto.subtle.importKey("raw", pwBytes, "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
     { name: "PBKDF2", salt: fromHex(saltHex), iterations: iterations, hash: "SHA-256" },
     keyMaterial,

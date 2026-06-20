@@ -1012,6 +1012,15 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
     return structuredClone(config);
   }
 
+  // Client-safe view of the config. `authCookieSecret` is the HMAC key that
+  // signs edge password-gate session cookies — it must never reach the browser
+  // (it's served by /api/status and /api/config), or forged auth cookies become
+  // possible. Strip it from anything client- or CLI-output-facing.
+  function getPublicConfig() {
+    const { authCookieSecret, ...rest } = config;
+    return structuredClone(rest);
+  }
+
   async function updatePages({ projectName, accountId, accountName } = {}) {
     const nextAccountId = accountId === undefined ? config.pages.accountId : accountId;
     const nextAccountName =
@@ -1064,6 +1073,7 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
     setBadge,
     setGoal,
     get,
+    getPublicConfig,
     updatePages,
     updateFeedback,
     configPath
@@ -2660,18 +2670,25 @@ export function createReportStore({
   // salted PBKDF2 hash of the password (the plaintext is never persisted) which
   // is later baked into the deployed Pages Function. Disabling clears it. The
   // caller is responsible for redeploying active snapshots so the gate flips.
-  async function setPasswordProtection(id, { enabled, password } = {}) {
+  // `hash` is an internal escape hatch: callers (rollback after a failed deploy)
+  // can restore a previously-computed { salt, hash, iterations } without the
+  // plaintext. Normal callers pass `password` and the hash is derived.
+  async function setPasswordProtection(id, { enabled, password, hash } = {}) {
     const report = reports.get(id);
     if (!report) {
       throw appError("Report was not found.", 404);
     }
     if (enabled) {
-      const normalized = String(password ?? "").trim();
-      if (!normalized) {
-        throw appError("A password is required to protect this page.", 400);
+      let nextHash = hash;
+      if (!nextHash) {
+        const normalized = String(password ?? "").trim();
+        if (!normalized) {
+          throw appError("A password is required to protect this page.", 400);
+        }
+        nextHash = makePasswordHash(normalized);
       }
       report.passwordProtected = true;
-      report.passwordHash = makePasswordHash(normalized);
+      report.passwordHash = nextHash;
     } else {
       report.passwordProtected = false;
       report.passwordHash = null;
@@ -3271,7 +3288,7 @@ function activeSnapshotSlugs(report) {
 }
 
 async function detectAndPersistCloudflareProjects({ cloudflareAuth, configStore }) {
-  const currentConfig = configStore.get();
+  const currentConfig = configStore.getPublicConfig();
   const projects = await cloudflareAuth.listProjects({
     accountId: currentConfig.pages.accountId
   });
@@ -3305,7 +3322,7 @@ async function ensureCloudflarePagesTarget({
   autoCreate = true,
   branch = DEFAULT_PAGES_BRANCH
 }) {
-  const currentConfig = configStore.get();
+  const currentConfig = configStore.getPublicConfig();
   const session = await cloudflareAuth.refreshSession();
   const accounts = session.accounts;
   const productionBranch = normalizePagesBranch(branch);
@@ -3668,13 +3685,13 @@ async function handleApi(
         projectName: pages.projectName,
         baseUrl: pages.baseUrl
       },
-      config: configStore.get()
+      config: configStore.getPublicConfig()
     });
     return;
   }
 
   if (url.pathname === "/api/config" && req.method === "GET") {
-    sendJson(res, 200, { config: configStore.get() });
+    sendJson(res, 200, { config: configStore.getPublicConfig() });
     return;
   }
 
@@ -3812,7 +3829,7 @@ async function handleApi(
     });
     sendJson(res, 200, {
       cloudflare: { loggedOut: true },
-      config: configStore.get()
+      config: configStore.getPublicConfig()
     });
     return;
   }
@@ -4185,6 +4202,12 @@ async function handleApi(
   if (passwordMatch && req.method === "POST") {
     const body = await readJsonBody(req);
     const id = decodeURIComponent(passwordMatch[1]);
+    // Capture prior protection state so we can roll back if a deploy fails —
+    // persisted state must never claim a protection status the live site lacks.
+    const beforeState = store.get(id);
+    const prevPasswordState = beforeState
+      ? { passwordProtected: beforeState.passwordProtected === true, passwordHash: beforeState.passwordHash || null }
+      : null;
     const report = await store.setPasswordProtection(id, {
       enabled: body.enabled === true,
       password: typeof body.password === "string" ? body.password : ""
@@ -4192,32 +4215,44 @@ async function handleApi(
     // Redeploy active snapshots so the edge gate turns on/off in place at the
     // same URL. Content is unchanged; only the generated middleware differs.
     const snapshots = store.activeSnapshotPublications(report);
-    for (const publication of snapshots) {
-      await deployQueue.enqueue(async () => {
-        try {
-          await pagesPublisher.syncPublication({
-            report,
-            publication,
-            pagesConfig: configStore.get().pages
-          });
-        } catch (error) {
-          const message = stripAnsi(error.message || "");
-          const provisionable =
-            /project.*not.*found|could not find.*project|does not exist|no such project|account|select an account/i.test(
-              message
-            );
-          if (!provisionable) {
-            throw error;
+    try {
+      for (const publication of snapshots) {
+        await deployQueue.enqueue(async () => {
+          try {
+            await pagesPublisher.syncPublication({
+              report,
+              publication,
+              pagesConfig: configStore.get().pages
+            });
+          } catch (error) {
+            const message = stripAnsi(error.message || "");
+            const provisionable =
+              /project.*not.*found|could not find.*project|does not exist|no such project|account|select an account/i.test(
+                message
+              );
+            if (!provisionable) {
+              throw error;
+            }
+            await ensureCloudflarePagesTarget({ cloudflareAuth, configStore });
+            await pagesPublisher.syncPublication({
+              report,
+              publication,
+              pagesConfig: configStore.get().pages
+            });
           }
-          await ensureCloudflarePagesTarget({ cloudflareAuth, configStore });
-          await pagesPublisher.syncPublication({
-            report,
-            publication,
-            pagesConfig: configStore.get().pages
-          });
-        }
-        await store.syncSnapshot(publication.token);
-      });
+          await store.syncSnapshot(publication.token);
+        });
+      }
+    } catch (error) {
+      if (prevPasswordState) {
+        await store
+          .setPasswordProtection(id, {
+            enabled: prevPasswordState.passwordProtected,
+            hash: prevPasswordState.passwordHash
+          })
+          .catch(() => {});
+      }
+      throw error;
     }
     sendJson(res, 200, { report: store.formatReport(store.get(id), options) });
     return;
@@ -4484,7 +4519,7 @@ export async function setupCloudflarePages({
     loginIfNeeded: true
   });
   return {
-    config: configStore.get(),
+    config: configStore.getPublicConfig(),
     cloudflare: target.cloudflare
   };
 }
@@ -4551,7 +4586,7 @@ export async function getCloudflarePagesStatus({
     normalizeAccountName(activeAccount?.name || "") || normalizeAccountName(pages.accountName || "");
 
   return {
-    config: configStore.get(),
+    config: configStore.getPublicConfig(),
     cloudflare: {
       ...credential,
       loggedIn: session.loggedIn,
@@ -4721,13 +4756,19 @@ export async function publishReportSnapshot({
   if (store.get(report.id).passwordProtected) {
     // Commit BEFORE deploying so the snapshot is in the protected manifest from
     // the very first deploy — there is no window where the page is served
-    // without its password gate.
+    // without its password gate. If the deploy fails, revoke the just-committed
+    // snapshot so we don't leave a dangling active publication with no URL.
     await store.commitPublication(report.id, draft.publication);
-    draft.publication.publicUrl = await pagesPublisher.syncPublication({
-      report: store.get(report.id),
-      publication: draft.publication,
-      pagesConfig: configStore.get().pages
-    });
+    try {
+      draft.publication.publicUrl = await pagesPublisher.syncPublication({
+        report: store.get(report.id),
+        publication: draft.publication,
+        pagesConfig: configStore.get().pages
+      });
+    } catch (error) {
+      await store.revokePublication(draft.publication.token).catch(() => {});
+      throw error;
+    }
     await store.syncSnapshot(draft.publication.token);
   } else {
     draft.publication.publicUrl = await pagesPublisher.publish({

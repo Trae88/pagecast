@@ -210,9 +210,22 @@ async function publish(args) {
     return;
   }
   const label = optionValue(parsed, "label");
+  const passwordProvided = Object.prototype.hasOwnProperty.call(parsed.options, "password");
   const password = optionValue(parsed, "password");
   const disableProtection = parsed.flags.has("no-password");
   const reportPath = parsed.positionals[0];
+
+  if (passwordProvided && disableProtection) {
+    printError({ message: "Use either --password or --no-password, not both.", statusCode: 400 }, json);
+    return;
+  }
+  if (passwordProvided && !password) {
+    printError(
+      { message: "--password cannot be empty. Provide a value, or use --no-password to remove protection.", statusCode: 400 },
+      json
+    );
+    return;
+  }
 
   try {
     const result = await publishReportSnapshot({
@@ -398,7 +411,7 @@ function usage() {
     [
       "Usage:",
       "  pagecast [serve]                                      Start the local app and open the admin UI",
-      "  pagecast publish <path> [--password <pw>] [--json]    Publish an HTML/Markdown snapshot",
+      "  pagecast publish <path> [--password <pw>|--no-password] [--json]  Publish an HTML/Markdown snapshot",
       "  pagecast publish site <dir> --project <name> [--json] Deploy a static folder to Pages",
       "  pagecast pages setup [--project <name>] [--json]      Connect and prepare Cloudflare Pages",
       "  pagecast pages status [--json]                        Show Cloudflare Pages configuration",
