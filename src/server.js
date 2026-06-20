@@ -1149,6 +1149,103 @@ export function injectBadge(html) {
   return `${html}\n${tag}\n`;
 }
 
+// Default Open Graph card image — a Pagecast-branded card already hosted on the
+// landing site. Branded so every shared link carries Pagecast into the feed
+// (the pre-click half of the badge loop). Per-report dynamic cards are a future
+// enhancement; keep this a single constant so it's a one-line change.
+export const DEFAULT_OG_IMAGE = "https://pagecasthq.pages.dev/og-image.png";
+
+function escapeAttr(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// Decode the handful of entities a source document might already carry, so we
+// don't double-escape when re-emitting the text into a meta attribute.
+function decodeBasicEntities(value) {
+  return String(value)
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;|&apos;/gi, "'");
+}
+
+// Pull a human title from a document: prefer a meaningful <title>, else fall
+// back to the report's display name.
+export function extractTitle(html, fallback = "") {
+  const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(String(html || ""));
+  const title = match ? decodeBasicEntities(match[1].replace(/\s+/g, " ").trim()) : "";
+  const generic = /^(index|untitled|document|report)$/i;
+  if (title && !generic.test(title)) {
+    return title;
+  }
+  return String(fallback || title || "").trim();
+}
+
+// Pull a short description: prefer an existing meta description, else the first
+// paragraph's text, truncated. Returns "" when nothing usable is found.
+export function extractDescription(html) {
+  const doc = String(html || "");
+  const meta = /<meta[^>]+name=["']description["'][^>]*>/i.exec(doc);
+  if (meta) {
+    const content = /content=["']([\s\S]*?)["']/i.exec(meta[0]);
+    if (content && content[1].trim()) {
+      return decodeBasicEntities(content[1].replace(/\s+/g, " ").trim()).slice(0, 200);
+    }
+  }
+  const para = /<p[^>]*>([\s\S]*?)<\/p>/i.exec(doc);
+  if (para) {
+    const text = decodeBasicEntities(para[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+    if (text) {
+      return text.slice(0, 200);
+    }
+  }
+  return "";
+}
+
+// Inject Open Graph + Twitter card meta so shared links unfurl richly instead of
+// as bare URLs. Idempotent and non-clobbering: if the document already declares
+// its own og: meta, it's returned unchanged. `image`/`siteName` are only emitted
+// when provided (the caller gates Pagecast branding on the badge/white-label
+// setting). Pure + exported for testing.
+export function injectSocialMeta(html, { title, description, url, image, siteName } = {}) {
+  const doc = String(html || "");
+  if (/(?:property|name)=["']og:/i.test(doc)) {
+    return doc;
+  }
+  if (!title && !description && !url) {
+    return doc;
+  }
+  const tags = [];
+  const meta = (prop, content, attr = "property") => {
+    if (content) {
+      tags.push(`<meta ${attr}="${prop}" content="${escapeAttr(content)}">`);
+    }
+  };
+  meta("og:type", "article");
+  meta("og:title", title);
+  meta("og:description", description);
+  meta("og:url", url);
+  meta("og:image", image);
+  meta("og:site_name", siteName);
+  meta("twitter:card", "summary_large_image", "name");
+  meta("twitter:title", title, "name");
+  meta("twitter:description", description, "name");
+  meta("twitter:image", image, "name");
+  const block = tags.join("\n");
+  if (/<\/head>/i.test(doc)) {
+    return doc.replace(/<\/head>/i, `${block}\n</head>`);
+  }
+  if (/<body[^>]*>/i.test(doc)) {
+    return doc.replace(/<body[^>]*>/i, (bodyTag) => `${block}\n${bodyTag}`);
+  }
+  return `${block}\n${doc}`;
+}
+
 export function createCloudflarePagesPublisher({
   dataDir = path.join(PROJECT_ROOT, ".pagecast"),
   spawnImpl = spawn,
@@ -1224,7 +1321,7 @@ export function createCloudflarePagesPublisher({
     await fs.writeFile(routesPath, renderRoutesJson(manifest.map((entry) => entry.slug)), "utf8");
   }
 
-  async function stagePublication(report, publication) {
+  async function stagePublication(report, publication, { pagesBaseUrl = "" } = {}) {
     const slug = publication.slug || publication.token;
     const destinationRoot = publicationDir(slug);
     const sourceRoot = publishSourceFor(report);
@@ -1247,9 +1344,20 @@ export function createCloudflarePagesPublisher({
       html = injectFeedbackWidget(html, { url: feedback.url, slug });
     }
     // Inject the "Published with Pagecast" badge unless turned off (white-label).
-    if (getBadge()) {
+    const badgeOn = getBadge();
+    if (badgeOn) {
       html = injectBadge(html);
     }
+    // Inject Open Graph / Twitter meta so the shared link unfurls richly. The
+    // Pagecast-branded card image + site_name are gated on the badge setting, so
+    // white-label pages get clean per-report unfurls without Pagecast branding.
+    html = injectSocialMeta(html, {
+      title: extractTitle(html, report.name),
+      description: extractDescription(html),
+      url: pagesBaseUrl ? joinUrl(pagesBaseUrl, `/p/${encodeURIComponent(slug)}/`) : "",
+      image: badgeOn ? DEFAULT_OG_IMAGE : "",
+      siteName: badgeOn ? "Pagecast" : ""
+    });
     await fs.writeFile(indexPath, html, "utf8");
   }
 
@@ -1335,7 +1443,7 @@ export function createCloudflarePagesPublisher({
   async function publish({ report, publication, pagesConfig }) {
     const slug = publication.slug || publication.token;
     await ensureSiteRoot();
-    await stagePublication(report, publication);
+    await stagePublication(report, publication, { pagesBaseUrl: pagesConfig?.baseUrl });
     try {
       const baseUrl = await deploy(pagesConfig);
       return joinUrl(baseUrl, `/p/${encodeURIComponent(slug)}/`);
@@ -1351,7 +1459,7 @@ export function createCloudflarePagesPublisher({
   async function syncPublication({ report, publication, pagesConfig }) {
     const slug = publication.slug || publication.token;
     await ensureSiteRoot();
-    await stagePublication(report, publication);
+    await stagePublication(report, publication, { pagesBaseUrl: pagesConfig?.baseUrl });
     const baseUrl = await deploy(pagesConfig);
     return joinUrl(baseUrl, `/p/${encodeURIComponent(slug)}/`);
   }
@@ -1360,7 +1468,7 @@ export function createCloudflarePagesPublisher({
   // returning the new public URL.
   async function renamePublication({ oldSlug, newSlug, report, publication, pagesConfig }) {
     await ensureSiteRoot();
-    await stagePublication(report, { ...publication, slug: newSlug });
+    await stagePublication(report, { ...publication, slug: newSlug }, { pagesBaseUrl: pagesConfig?.baseUrl });
     if (oldSlug && oldSlug !== newSlug) {
       await removePublication(oldSlug);
     }
