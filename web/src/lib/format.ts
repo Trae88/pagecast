@@ -36,7 +36,8 @@ export function expiryLabel(
   if (expiresAt == null) return "Never";
   const remaining = expiresAt - Date.now();
   if (remaining <= 0) return "Expired";
-  const minutes = Math.round(remaining / 60_000);
+  // remaining > 0 here, so never round down to a confusing "Expires in 0m".
+  const minutes = Math.max(1, Math.round(remaining / 60_000));
   if (minutes < 60) return `Expires in ${minutes}m`;
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `Expires in ${hours}h`;

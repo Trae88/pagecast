@@ -4317,32 +4317,44 @@ async function handleApi(
       throw appError("Only snapshot publications can expire.", 400);
     }
     const expiresAt = resolveExpiresAt({ expires: body.expires, defaultExpiry: configStore.get().defaultExpiry });
+    // Capture the prior expiry BEFORE the store mutates the record in place, so a
+    // failed redeploy can roll it back (stored state must never claim an expiry
+    // the live edge isn't enforcing — mirrors the password-protection rollback).
+    const previousExpiresAt =
+      typeof existing.publication.expiresAt === "number" && existing.publication.expiresAt > 0
+        ? existing.publication.expiresAt
+        : null;
     await store.setPublicationExpiry(token, expiresAt);
     // Redeploy so the edge middleware manifest reflects the new expiry.
-    await deployQueue.enqueue(async () => {
-      try {
-        await pagesPublisher.syncPublication({
-          report: existing.report,
-          publication: existing.publication,
-          pagesConfig: configStore.get().pages
-        });
-      } catch (error) {
-        const message = stripAnsi(error.message || "");
-        const provisionable =
-          /project.*not.*found|could not find.*project|does not exist|no such project|account|select an account/i.test(
-            message
-          );
-        if (!provisionable) {
-          throw error;
+    try {
+      await deployQueue.enqueue(async () => {
+        try {
+          await pagesPublisher.syncPublication({
+            report: existing.report,
+            publication: existing.publication,
+            pagesConfig: configStore.get().pages
+          });
+        } catch (error) {
+          const message = stripAnsi(error.message || "");
+          const provisionable =
+            /project.*not.*found|could not find.*project|does not exist|no such project|account|select an account/i.test(
+              message
+            );
+          if (!provisionable) {
+            throw error;
+          }
+          await ensureCloudflarePagesTarget({ cloudflareAuth, configStore });
+          await pagesPublisher.syncPublication({
+            report: existing.report,
+            publication: existing.publication,
+            pagesConfig: configStore.get().pages
+          });
         }
-        await ensureCloudflarePagesTarget({ cloudflareAuth, configStore });
-        await pagesPublisher.syncPublication({
-          report: existing.report,
-          publication: existing.publication,
-          pagesConfig: configStore.get().pages
-        });
-      }
-    });
+      });
+    } catch (error) {
+      await store.setPublicationExpiry(token, previousExpiresAt).catch(() => {});
+      throw error;
+    }
     const refreshed = store.findPublication(token);
     sendJson(res, 200, {
       report: store.formatReport(refreshed.report, options),

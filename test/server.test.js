@@ -3068,3 +3068,90 @@ test("password-protection endpoint rolls back state when the redeploy fails", as
     await runtime.close();
   }
 });
+
+// CodeRabbit (PR #5): same rollback symmetry for the expiry endpoint — a failed
+// redeploy must restore the prior expiresAt, so stored state never claims an
+// expiry the live edge isn't enforcing.
+test("expiry endpoint rolls back expiresAt when the redeploy fails", async () => {
+  const tempDir = await makeTempDir();
+  const dataDir = path.join(tempDir, "data");
+  const reportDir = path.join(tempDir, "report");
+  await fs.mkdir(reportDir, { recursive: true });
+  const reportPath = path.join(reportDir, "report.html");
+  await fs.writeFile(reportPath, "<h1>Snapshot</h1>");
+
+  // First deploy (the gated publish) succeeds; the second (the expiry-change
+  // redeploy) fails, exercising the endpoint's rollback path.
+  let deployCount = 0;
+  function flakyDeploy() {
+    deployCount += 1;
+    const shouldFail = deployCount >= 2;
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = (signal = "SIGTERM") => child.emit("exit", null, signal);
+    setImmediate(() => {
+      if (shouldFail) {
+        child.stderr.emit("data", Buffer.from("Deployment failed: simulated edge error"));
+        child.emit("exit", 1, null);
+      } else {
+        child.stdout.emit("data", Buffer.from("Cloudflare Pages deploy complete"));
+        child.emit("exit", 0, null);
+      }
+    });
+    return child;
+  }
+
+  const runtime = await startServers({
+    adminPort: 0,
+    publicPort: 0,
+    dataDir,
+    staticDir: path.resolve("public"),
+    pagesDeploySpawnImpl: flakyDeploy,
+    pagesDeployTimeoutMs: 1000
+  });
+
+  try {
+    await fetch(`${runtime.adminUrl}/api/config/pages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectName: "team-reports", accountId: "0123456789abcdef0123456789abcdef" })
+    });
+    const addData = await (
+      await fetch(`${runtime.adminUrl}/api/reports/path`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: reportPath })
+      })
+    ).json();
+    const id = addData.report.id;
+
+    // Publish with an explicit 1d expiry (gated → one successful deploy).
+    const publishData = await (
+      await fetch(`${runtime.adminUrl}/api/reports/${id}/publish-snapshot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expires: "1d" })
+      })
+    ).json();
+    const token = publishData.publication.token;
+    const originalExpiresAt = publishData.publication.expiresAt;
+    assert.ok(typeof originalExpiresAt === "number", "the published link has a 1d expiry");
+
+    // Change the expiry to 7d — the redeploy fails, so the endpoint should error.
+    const changeRes = await fetch(`${runtime.adminUrl}/api/publications/${token}/expiry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expires: "7d" })
+    });
+    assert.ok(changeRes.status >= 400, "a failed redeploy should surface an error");
+
+    // ...and the persisted expiry must be the original 1d value, not the 7d one.
+    const listData = await (await fetch(`${runtime.adminUrl}/api/reports`)).json();
+    const report = listData.reports.find((r) => r.id === id);
+    const pub = report.publications.find((p) => p.token === token);
+    assert.equal(pub.expiresAt, originalExpiresAt, "expiry must roll back to the prior value on redeploy failure");
+  } finally {
+    await runtime.close();
+  }
+});
