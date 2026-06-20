@@ -8,6 +8,12 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { markdownToHtml } from "./markdown.js";
+import {
+  isValidPasswordHash,
+  makePasswordHash,
+  renderAuthMiddleware,
+  renderRoutesJson
+} from "./crypto.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -353,7 +359,14 @@ function normalizeConfig(config = {}) {
     // loop). On by default; can be turned off (the white-label/monetization lever).
     badge: config.badge !== false,
     // The currently-published live goal-progress page (or null).
-    goal: normalizeGoal(config.goal)
+    goal: normalizeGoal(config.goal),
+    // HMAC secret for signing edge password-gate session cookies. Generated once
+    // (see createConfigStore.init) and kept stable so cookies survive redeploys;
+    // preserved here so partial config rebuilds don't drop it.
+    authCookieSecret:
+      typeof config.authCookieSecret === "string" && config.authCookieSecret
+        ? config.authCookieSecret
+        : null
   };
 }
 
@@ -974,19 +987,38 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
     await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   }
 
+  // Generate the cookie-signing secret once and keep it; only deploys that gate
+  // a protected page ever use it, but it must be stable across redeploys.
+  function ensureAuthCookieSecret() {
+    if (!config.authCookieSecret) {
+      config = { ...config, authCookieSecret: randomBytes(32).toString("hex") };
+    }
+  }
+
   async function init() {
     if (!(await pathExists(configPath))) {
+      ensureAuthCookieSecret();
       await save();
       return;
     }
 
     const parsed = safeJsonParse(await fs.readFile(configPath, "utf8"), {});
     config = normalizeConfig(parsed);
+    ensureAuthCookieSecret();
     await save();
   }
 
   function get() {
     return structuredClone(config);
+  }
+
+  // Client-safe view of the config. `authCookieSecret` is the HMAC key that
+  // signs edge password-gate session cookies — it must never reach the browser
+  // (it's served by /api/status and /api/config), or forged auth cookies become
+  // possible. Strip it from anything client- or CLI-output-facing.
+  function getPublicConfig() {
+    const { authCookieSecret, ...rest } = config;
+    return structuredClone(rest);
   }
 
   async function updatePages({ projectName, accountId, accountName } = {}) {
@@ -1005,7 +1037,8 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
       // the account on publish) must not wipe other settings.
       feedback: config.feedback,
       badge: config.badge,
-      goal: config.goal
+      goal: config.goal,
+      authCookieSecret: config.authCookieSecret
     });
     await save();
     return get();
@@ -1028,6 +1061,7 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
       pages: config.pages,
       badge: config.badge,
       goal: config.goal,
+      authCookieSecret: config.authCookieSecret,
       feedback: feedback === null ? null : { ...(config.feedback || {}), ...feedback }
     });
     await save();
@@ -1039,6 +1073,7 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
     setBadge,
     setGoal,
     get,
+    getPublicConfig,
     updatePages,
     updateFeedback,
     configPath
@@ -1120,7 +1155,9 @@ export function createCloudflarePagesPublisher({
   timeoutMs = 180000,
   getRedirects = () => [],
   getFeedback = () => null,
-  getBadge = () => true
+  getBadge = () => true,
+  getProtectedPublications = () => [],
+  getAuthCookieSecret = () => null
 } = {}) {
   const siteRoot = path.join(dataDir, "pages-site");
   const deployRoot = path.join(dataDir, "pages-deploy");
@@ -1156,6 +1193,35 @@ export function createCloudflarePagesPublisher({
     } else {
       await fs.rm(redirectsPath, { force: true });
     }
+
+    await writeAuthAssets();
+  }
+
+  // (Re)generate the edge password gate on every deploy. When any publication is
+  // protected, write functions/_middleware.js (the Basic-auth gate + baked hash
+  // manifest) and a _routes.json that scopes the Function to protected prefixes
+  // only. When none are protected, remove both so the site stays purely static.
+  async function writeAuthAssets() {
+    const manifest = (getProtectedPublications() || []).filter(
+      (entry) => entry && entry.slug && isValidPasswordHash(entry)
+    );
+    const functionsDir = path.join(siteRoot, "functions");
+    const middlewarePath = path.join(functionsDir, "_middleware.js");
+    const routesPath = path.join(siteRoot, "_routes.json");
+
+    if (manifest.length === 0) {
+      await fs.rm(functionsDir, { recursive: true, force: true });
+      await fs.rm(routesPath, { force: true });
+      return;
+    }
+
+    await fs.mkdir(functionsDir, { recursive: true });
+    await fs.writeFile(
+      middlewarePath,
+      renderAuthMiddleware(manifest, { cookieSecret: getAuthCookieSecret() || "", badge: getBadge() }),
+      "utf8"
+    );
+    await fs.writeFile(routesPath, renderRoutesJson(manifest.map((entry) => entry.slug)), "utf8");
   }
 
   async function stagePublication(report, publication) {
@@ -1196,12 +1262,17 @@ export function createCloudflarePagesPublisher({
     const accountId = normalizeAccountId(pagesConfig.accountId || "");
     const deployBranch = normalizePagesBranch(branch);
 
+    // Deploy from INSIDE rootDir (path arg ".") instead of passing rootDir as
+    // the path. `wrangler pages deploy` resolves the Functions directory
+    // relative to the current working directory, NOT the deploy-path argument —
+    // so running from rootDir is what lets our generated functions/_middleware.js
+    // (the password gate) and _routes.json actually get compiled and uploaded.
     const args = [
       "--yes",
       "wrangler",
       "pages",
       "deploy",
-      rootDir,
+      ".",
       "--project-name",
       projectName,
       "--branch",
@@ -1216,6 +1287,7 @@ export function createCloudflarePagesPublisher({
       command: "npx",
       args,
       timeoutMs,
+      cwd: rootDir,
       env: accountId ? { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId } : process.env
     });
 
@@ -1731,6 +1803,12 @@ export function createReportStore({
       buildError: report.buildError || "",
       lastBuildAt: report.lastBuildAt || null,
       sourceMode: report.sourceMode || defaultSourceMode,
+      // Edge password protection. The salted hash is the actual lock (baked into
+      // the deployed Pages Function); it is persisted in state.json but NEVER
+      // returned by the API (see formatReport). Corrupt/legacy shapes degrade to
+      // unprotected rather than deploying a broken gate.
+      passwordProtected: report.passwordProtected === true && isValidPasswordHash(report.passwordHash),
+      passwordHash: isValidPasswordHash(report.passwordHash) ? report.passwordHash : null,
       publications: Array.isArray(report.publications)
         ? report.publications.map(normalizePublication)
         : []
@@ -1874,6 +1952,9 @@ export function createReportStore({
       buildStatus: report.buildStatus || "idle",
       buildError: report.buildError || "",
       lastBuildAt: report.lastBuildAt || null,
+      // Only the boolean is exposed; report.passwordHash (salt + hash) is a
+      // server-side secret and is intentionally never serialized to the API.
+      passwordProtected: report.passwordProtected === true,
       createdAt: report.createdAt,
       updatedAt: report.updatedAt,
       localUrl: adminBaseUrl ? joinUrl(adminBaseUrl, previewSuffix) : null,
@@ -2290,6 +2371,23 @@ export function createReportStore({
     );
   }
 
+  // The set of currently-live protected slugs and their password hashes, used to
+  // regenerate the edge auth middleware on every deploy. One report's hash maps
+  // to every active snapshot slug of that report.
+  function protectedPublicationManifest() {
+    const manifest = [];
+    for (const report of reports.values()) {
+      if (!report.passwordProtected || !isValidPasswordHash(report.passwordHash)) {
+        continue;
+      }
+      for (const publication of activeSnapshotPublications(report)) {
+        const slug = publication.slug || publication.token;
+        manifest.push({ slug, ...report.passwordHash });
+      }
+    }
+    return manifest;
+  }
+
   // Bump a snapshot's updatedAt (and its report's) after a successful same-URL
   // sync. Token is the stable identity; the slug/URL is unchanged.
   async function syncSnapshot(token) {
@@ -2568,6 +2666,38 @@ export function createReportStore({
     return report;
   }
 
+  // Enable/disable edge password protection for a report. Enabling stores a
+  // salted PBKDF2 hash of the password (the plaintext is never persisted) which
+  // is later baked into the deployed Pages Function. Disabling clears it. The
+  // caller is responsible for redeploying active snapshots so the gate flips.
+  // `hash` is an internal escape hatch: callers (rollback after a failed deploy)
+  // can restore a previously-computed { salt, hash, iterations } without the
+  // plaintext. Normal callers pass `password` and the hash is derived.
+  async function setPasswordProtection(id, { enabled, password, hash } = {}) {
+    const report = reports.get(id);
+    if (!report) {
+      throw appError("Report was not found.", 404);
+    }
+    if (enabled) {
+      let nextHash = hash;
+      if (!nextHash) {
+        const normalized = String(password ?? "").trim();
+        if (!normalized) {
+          throw appError("A password is required to protect this page.", 400);
+        }
+        nextHash = makePasswordHash(normalized);
+      }
+      report.passwordProtected = true;
+      report.passwordHash = nextHash;
+    } else {
+      report.passwordProtected = false;
+      report.passwordHash = null;
+    }
+    report.updatedAt = nowIso();
+    await save();
+    return report;
+  }
+
   // Reassign explicit order indices to the listed ids (in the given order). Ids
   // not listed keep their relative order after the listed ones. Unknown ids are
   // rejected so the caller can surface a 400.
@@ -2627,6 +2757,7 @@ export function createReportStore({
     findActivePublication,
     findActivePublicationBySlug,
     activeSnapshotPublications,
+    protectedPublicationManifest,
     revokePublication,
     revokeAll,
     syncSnapshot,
@@ -2635,6 +2766,7 @@ export function createReportStore({
     readContent,
     writeContent,
     setAutoSync,
+    setPasswordProtection,
     reorder,
     listAutoSyncReports,
     listRedirects,
@@ -3156,7 +3288,7 @@ function activeSnapshotSlugs(report) {
 }
 
 async function detectAndPersistCloudflareProjects({ cloudflareAuth, configStore }) {
-  const currentConfig = configStore.get();
+  const currentConfig = configStore.getPublicConfig();
   const projects = await cloudflareAuth.listProjects({
     accountId: currentConfig.pages.accountId
   });
@@ -3190,7 +3322,7 @@ async function ensureCloudflarePagesTarget({
   autoCreate = true,
   branch = DEFAULT_PAGES_BRANCH
 }) {
-  const currentConfig = configStore.get();
+  const currentConfig = configStore.getPublicConfig();
   const session = await cloudflareAuth.refreshSession();
   const accounts = session.accounts;
   const productionBranch = normalizePagesBranch(branch);
@@ -3553,13 +3685,13 @@ async function handleApi(
         projectName: pages.projectName,
         baseUrl: pages.baseUrl
       },
-      config: configStore.get()
+      config: configStore.getPublicConfig()
     });
     return;
   }
 
   if (url.pathname === "/api/config" && req.method === "GET") {
-    sendJson(res, 200, { config: configStore.get() });
+    sendJson(res, 200, { config: configStore.getPublicConfig() });
     return;
   }
 
@@ -3697,7 +3829,7 @@ async function handleApi(
     });
     sendJson(res, 200, {
       cloudflare: { loggedOut: true },
-      config: configStore.get()
+      config: configStore.getPublicConfig()
     });
     return;
   }
@@ -4066,6 +4198,66 @@ async function handleApi(
     return;
   }
 
+  const passwordMatch = /^\/api\/reports\/([^/]+)\/password-protection$/.exec(url.pathname);
+  if (passwordMatch && req.method === "POST") {
+    const body = await readJsonBody(req);
+    const id = decodeURIComponent(passwordMatch[1]);
+    // Capture prior protection state so we can roll back if a deploy fails —
+    // persisted state must never claim a protection status the live site lacks.
+    const beforeState = store.get(id);
+    const prevPasswordState = beforeState
+      ? { passwordProtected: beforeState.passwordProtected === true, passwordHash: beforeState.passwordHash || null }
+      : null;
+    const report = await store.setPasswordProtection(id, {
+      enabled: body.enabled === true,
+      password: typeof body.password === "string" ? body.password : ""
+    });
+    // Redeploy active snapshots so the edge gate turns on/off in place at the
+    // same URL. Content is unchanged; only the generated middleware differs.
+    const snapshots = store.activeSnapshotPublications(report);
+    try {
+      for (const publication of snapshots) {
+        await deployQueue.enqueue(async () => {
+          try {
+            await pagesPublisher.syncPublication({
+              report,
+              publication,
+              pagesConfig: configStore.get().pages
+            });
+          } catch (error) {
+            const message = stripAnsi(error.message || "");
+            const provisionable =
+              /project.*not.*found|could not find.*project|does not exist|no such project|account|select an account/i.test(
+                message
+              );
+            if (!provisionable) {
+              throw error;
+            }
+            await ensureCloudflarePagesTarget({ cloudflareAuth, configStore });
+            await pagesPublisher.syncPublication({
+              report,
+              publication,
+              pagesConfig: configStore.get().pages
+            });
+          }
+          await store.syncSnapshot(publication.token);
+        });
+      }
+    } catch (error) {
+      if (prevPasswordState) {
+        await store
+          .setPasswordProtection(id, {
+            enabled: prevPasswordState.passwordProtected,
+            hash: prevPasswordState.passwordHash
+          })
+          .catch(() => {});
+      }
+      throw error;
+    }
+    sendJson(res, 200, { report: store.formatReport(store.get(id), options) });
+    return;
+  }
+
   if (url.pathname.startsWith("/api/tunnel/")) {
     sendJson(res, 410, {
       error: {
@@ -4135,7 +4327,9 @@ export async function startServers({
     timeoutMs: pagesDeployTimeoutMs,
     getRedirects: () => store.listRedirects(),
     getFeedback: () => configStore.get().feedback,
-    getBadge: () => configStore.get().badge
+    getBadge: () => configStore.get().badge,
+    getProtectedPublications: () => store.protectedPublicationManifest(),
+    getAuthCookieSecret: () => configStore.get().authCookieSecret
   });
   const deployQueue = createDeployQueue();
   const watchManager = createWatchManager({
@@ -4213,6 +4407,7 @@ export async function startServers({
 
 async function createHeadlessCloudflareContext({
   dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  store = null,
   cloudflareAuthSpawnImpl = spawn,
   pagesDeploySpawnImpl = spawn,
   cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS,
@@ -4231,7 +4426,12 @@ async function createHeadlessCloudflareContext({
     // Headless/CLI publishes (incl. the agent skill's `npx pagecast publish`)
     // must inject the feedback widget too, not just the running app.
     getFeedback: () => configStore.get().feedback,
-    getBadge: () => configStore.get().badge
+    getBadge: () => configStore.get().badge,
+    // A store is passed whenever the caller deploys the /p/ site, so a headless
+    // re-deploy regenerates (rather than wipes) the edge gate for protected
+    // reports. Site-only deploys (deploySite) pass none and never touch it.
+    getProtectedPublications: store ? () => store.protectedPublicationManifest() : () => [],
+    getAuthCookieSecret: () => configStore.get().authCookieSecret
   });
   return { configStore, cloudflareAuth, pagesPublisher };
 }
@@ -4319,7 +4519,7 @@ export async function setupCloudflarePages({
     loginIfNeeded: true
   });
   return {
-    config: configStore.get(),
+    config: configStore.getPublicConfig(),
     cloudflare: target.cloudflare
   };
 }
@@ -4386,7 +4586,7 @@ export async function getCloudflarePagesStatus({
     normalizeAccountName(activeAccount?.name || "") || normalizeAccountName(pages.accountName || "");
 
   return {
-    config: configStore.get(),
+    config: configStore.getPublicConfig(),
     cloudflare: {
       ...credential,
       loggedIn: session.loggedIn,
@@ -4501,6 +4701,8 @@ export async function deployCloudflarePagesSite({
 export async function publishReportSnapshot({
   path: reportPath,
   label,
+  password,
+  disableProtection = false,
   dataDir = path.join(PROJECT_ROOT, ".pagecast"),
   cloudflareAuthSpawnImpl = spawn,
   pagesDeploySpawnImpl = spawn,
@@ -4515,6 +4717,7 @@ export async function publishReportSnapshot({
   await store.init();
   const { configStore, cloudflareAuth, pagesPublisher } = await createHeadlessCloudflareContext({
     dataDir,
+    store,
     cloudflareAuthSpawnImpl,
     pagesDeploySpawnImpl,
     cloudflareListTimeoutMs,
@@ -4541,20 +4744,48 @@ export async function publishReportSnapshot({
   }
 
   const report = await store.addPath(reportPath);
+  // --password sets/replaces protection; --no-password removes it. Otherwise any
+  // existing protection on a reused report is left untouched.
+  if (typeof password === "string" && password.trim()) {
+    await store.setPasswordProtection(report.id, { enabled: true, password });
+  } else if (disableProtection) {
+    await store.setPasswordProtection(report.id, { enabled: false });
+  }
+
   const draft = store.draftPublication(report.id, { label, kind: "snapshot" });
-  draft.publication.publicUrl = await pagesPublisher.publish({
-    report: draft.report,
-    publication: draft.publication,
-    pagesConfig: configStore.get().pages
-  });
-  await store.commitPublication(report.id, draft.publication);
+  if (store.get(report.id).passwordProtected) {
+    // Commit BEFORE deploying so the snapshot is in the protected manifest from
+    // the very first deploy — there is no window where the page is served
+    // without its password gate. If the deploy fails, revoke the just-committed
+    // snapshot so we don't leave a dangling active publication with no URL.
+    await store.commitPublication(report.id, draft.publication);
+    try {
+      draft.publication.publicUrl = await pagesPublisher.syncPublication({
+        report: store.get(report.id),
+        publication: draft.publication,
+        pagesConfig: configStore.get().pages
+      });
+    } catch (error) {
+      await store.revokePublication(draft.publication.token).catch(() => {});
+      throw error;
+    }
+    await store.syncSnapshot(draft.publication.token);
+  } else {
+    draft.publication.publicUrl = await pagesPublisher.publish({
+      report: draft.report,
+      publication: draft.publication,
+      pagesConfig: configStore.get().pages
+    });
+    await store.commitPublication(report.id, draft.publication);
+  }
 
   return {
     url: draft.publication.publicUrl,
     token: draft.publication.token,
     label: draft.publication.label,
     projectName: configStore.get().pages.projectName,
-    reportId: report.id
+    reportId: report.id,
+    passwordProtected: store.get(report.id).passwordProtected === true
   };
 }
 
@@ -4580,6 +4811,7 @@ export async function publishGoalProgress({
   await store.init();
   const { configStore, cloudflareAuth, pagesPublisher } = await createHeadlessCloudflareContext({
     dataDir,
+    store,
     cloudflareAuthSpawnImpl,
     pagesDeploySpawnImpl,
     cloudflareListTimeoutMs,
@@ -4708,6 +4940,7 @@ export async function stopGoalProgress({
   await store.init();
   const { configStore, cloudflareAuth, pagesPublisher } = await createHeadlessCloudflareContext({
     dataDir,
+    store,
     cloudflareAuthSpawnImpl,
     pagesDeploySpawnImpl,
     cloudflareListTimeoutMs,

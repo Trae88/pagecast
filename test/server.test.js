@@ -713,7 +713,7 @@ test("snapshot publications deploy to Cloudflare Pages and revoke from the stage
 
   const deployCommands = [];
   function fakePagesDeploy(command, args, options) {
-    deployCommands.push({ command, args, accountId: options?.env?.CLOUDFLARE_ACCOUNT_ID || "" });
+    deployCommands.push({ command, args, cwd: options?.cwd, accountId: options?.env?.CLOUDFLARE_ACCOUNT_ID || "" });
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
@@ -782,12 +782,15 @@ test("snapshot publications deploy to Cloudflare Pages and revoke from the stage
       "wrangler",
       "pages",
       "deploy",
-      path.join(dataDir, "pages-site"),
+      ".",
       "--project-name",
       "team-reports",
       "--branch",
       "main"
     ]);
+    // Deploy runs from inside pages-site (path arg "."), so wrangler finds the
+    // generated functions/ + _routes.json (it resolves them relative to cwd).
+    assert.equal(deployCommands[0].cwd, path.join(dataDir, "pages-site"));
     // The account is passed via CLOUDFLARE_ACCOUNT_ID env, not an --account-id
     // flag (which `wrangler pages deploy` does not accept).
     assert.equal(deployCommands[0].accountId, "0123456789abcdef0123456789abcdef");
@@ -1072,7 +1075,7 @@ test("Headless Pages site deploy wraps Wrangler with project, branch, and accoun
 
   const deployCommands = [];
   function fakeDeploy(command, args, options) {
-    deployCommands.push({ command, args, accountId: options.env.CLOUDFLARE_ACCOUNT_ID || "" });
+    deployCommands.push({ command, args, cwd: options.cwd, accountId: options.env.CLOUDFLARE_ACCOUNT_ID || "" });
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
@@ -1113,12 +1116,13 @@ test("Headless Pages site deploy wraps Wrangler with project, branch, and accoun
         "wrangler",
         "pages",
         "deploy",
-        stagingRoot,
+        ".",
         "--project-name",
         "pagecasthq",
         "--branch",
         "main"
       ],
+      cwd: stagingRoot,
       accountId
     }
   ]);
@@ -1153,7 +1157,7 @@ test("Headless Pages site deploy defaults to the main branch when omitted", asyn
 
   const deployCommands = [];
   function fakeDeploy(command, args, options) {
-    deployCommands.push({ command, args, accountId: options.env.CLOUDFLARE_ACCOUNT_ID || "" });
+    deployCommands.push({ command, args, cwd: options.cwd, accountId: options.env.CLOUDFLARE_ACCOUNT_ID || "" });
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
@@ -2925,6 +2929,87 @@ test("admin server reflects CORS only for chrome-extension origins", async () =>
     assert.equal(pre.status, 204);
     assert.equal(pre.headers.get("access-control-allow-origin"), "chrome-extension://abcdefghij");
     assert.match(pre.headers.get("access-control-allow-methods") || "", /POST/);
+  } finally {
+    await runtime.close();
+  }
+});
+
+// CodeRabbit highlight: rollback symmetry — the protection endpoint must restore
+// prior state if the in-place redeploy fails, so persisted state never claims a
+// protection status the live site lacks.
+test("password-protection endpoint rolls back state when the redeploy fails", async () => {
+  const tempDir = await makeTempDir();
+  const dataDir = path.join(tempDir, "data");
+  const reportDir = path.join(tempDir, "report");
+  await fs.mkdir(reportDir, { recursive: true });
+  const reportPath = path.join(reportDir, "report.html");
+  await fs.writeFile(reportPath, "<h1>Snapshot</h1>");
+
+  // First deploy (the initial publish) succeeds; the second (the protection
+  // redeploy) fails, exercising the endpoint's rollback path.
+  let deployCount = 0;
+  function flakyDeploy() {
+    deployCount += 1;
+    const shouldFail = deployCount >= 2;
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = (signal = "SIGTERM") => child.emit("exit", null, signal);
+    setImmediate(() => {
+      if (shouldFail) {
+        child.stderr.emit("data", Buffer.from("Deployment failed: simulated edge error"));
+        child.emit("exit", 1, null);
+      } else {
+        child.stdout.emit("data", Buffer.from("Cloudflare Pages deploy complete"));
+        child.emit("exit", 0, null);
+      }
+    });
+    return child;
+  }
+
+  const runtime = await startServers({
+    adminPort: 0,
+    publicPort: 0,
+    dataDir,
+    staticDir: path.resolve("public"),
+    pagesDeploySpawnImpl: flakyDeploy,
+    pagesDeployTimeoutMs: 1000
+  });
+
+  try {
+    await fetch(`${runtime.adminUrl}/api/config/pages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectName: "team-reports", accountId: "0123456789abcdef0123456789abcdef" })
+    });
+    const addData = await (
+      await fetch(`${runtime.adminUrl}/api/reports/path`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: reportPath })
+      })
+    ).json();
+    const id = addData.report.id;
+
+    const publishRes = await fetch(`${runtime.adminUrl}/api/reports/${id}/publish-snapshot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    assert.equal(publishRes.status, 201);
+
+    // Enable protection — the redeploy fails, so the endpoint should error.
+    const protectRes = await fetch(`${runtime.adminUrl}/api/reports/${id}/password-protection`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true, password: "letmein" })
+    });
+    assert.ok(protectRes.status >= 400, "a failed redeploy should surface an error");
+
+    // ...and the persisted state must have rolled back to unprotected.
+    const listData = await (await fetch(`${runtime.adminUrl}/api/reports`)).json();
+    const report = listData.reports.find((r) => r.id === id);
+    assert.equal(report.passwordProtected, false, "protection state must roll back on redeploy failure");
   } finally {
     await runtime.close();
   }

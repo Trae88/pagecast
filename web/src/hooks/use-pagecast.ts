@@ -242,6 +242,45 @@ export function useAutoSync() {
   });
 }
 
+export function usePasswordProtection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      enabled,
+      password
+    }: {
+      id: string;
+      enabled: boolean;
+      password?: string;
+    }) => api.setPasswordProtection(id, enabled, password),
+    onSuccess: (data) => {
+      toast.success(
+        data.report.passwordProtected
+          ? "Password protection on."
+          : "Password protection off."
+      );
+      emitActivity({
+        status: "success",
+        title: data.report.passwordProtected
+          ? "Password protection on"
+          : "Password protection off",
+        message: data.report.name
+      });
+      invalidateReports(queryClient);
+    },
+    onError: (error) => {
+      const message = errorMessage(error, "Could not update password protection.");
+      toast.error(message);
+      emitActivity({
+        status: "error",
+        title: "Password protection failed",
+        message
+      });
+    }
+  });
+}
+
 export function useSyncPublication() {
   const queryClient = useQueryClient();
   return useMutation({

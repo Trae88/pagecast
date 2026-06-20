@@ -27,6 +27,7 @@ export interface Report {
   sourcePath: string | null;
   order: number;
   autoSync: boolean;
+  passwordProtected: boolean;
   sourceMode: SourceMode;
   buildCommand: string;
   buildOutputDir: string;
