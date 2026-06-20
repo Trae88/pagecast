@@ -1,5 +1,6 @@
 # Runtime data + build deps
 .pagecast/
+.wrangler/
 pagecast-extension.zip
 node_modules/
 web/node_modules/
