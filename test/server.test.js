@@ -2894,6 +2894,60 @@ test("POST /api/publish-local publishes a local file and updates the same URL on
   }
 });
 
+// Regression (Devin, PR #5): the publish-local new-publication path must
+// commit-before-deploy when the link is gated, so the FIRST deploy carries the
+// edge gate. Under the old publish-then-commit path the slug wasn't yet in the
+// committed manifest, so an expiring link shipped ungated (no _middleware.js).
+test("POST /api/publish-local gates an expiring link on the first deploy", async () => {
+  const tempDir = await makeTempDir();
+  const dataDir = path.join(tempDir, "data");
+  const filesDir = path.join(tempDir, "files");
+  await fs.mkdir(filesDir, { recursive: true });
+  const reportPath = path.join(filesDir, "report.html");
+  await fs.writeFile(reportPath, "<h1>Expiring local</h1>");
+  const { authSpawn, fakeDeploy } = makeHeadlessFakes();
+  const runtime = await startServers({
+    adminPort: 0,
+    publicPort: 0,
+    dataDir,
+    staticDir: path.resolve("public"),
+    cloudflareAuthSpawnImpl: authSpawn,
+    pagesDeploySpawnImpl: fakeDeploy,
+    cloudflareListTimeoutMs: 1000,
+    pagesDeployTimeoutMs: 1000
+  });
+  try {
+    await configurePages(runtime.adminUrl);
+    const res = await fetch(`${runtime.adminUrl}/api/publish-local`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: reportPath, expires: "1h" })
+    });
+    assert.equal(res.status, 201);
+    const data = await res.json();
+    assert.equal(data.ok, true);
+    assert.ok(typeof data.publication.expiresAt === "number", "publication carries an expiry");
+
+    // The first (and only) deploy must have written an edge gate carrying this
+    // slug's expiry, plus a _routes.json scoping the Function to it.
+    const middleware = await fs.readFile(
+      path.join(dataDir, "pages-site", "functions", "_middleware.js"),
+      "utf8"
+    );
+    assert.match(
+      middleware,
+      new RegExp(`"${data.slug}":\\{"expiresAt":\\d+\\}`),
+      "the deployed gate must carry the slug's expiresAt on the first deploy"
+    );
+    const routes = JSON.parse(
+      await fs.readFile(path.join(dataDir, "pages-site", "_routes.json"), "utf8")
+    );
+    assert.ok(routes.include.includes(`/p/${data.slug}/*`), "the Function is scoped to the expiring slug");
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("admin server reflects CORS only for chrome-extension origins", async () => {
   assert.equal(extensionCorsOrigin("chrome-extension://abcdefghij"), "chrome-extension://abcdefghij");
   assert.equal(extensionCorsOrigin("https://evil.com"), null);

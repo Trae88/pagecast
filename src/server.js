@@ -4107,18 +4107,35 @@ async function handleApi(
       );
       publication = (await store.syncSnapshot(latest.token)).publication;
     } else {
-      const draft = store.draftPublication(report.id, {
-        kind: "snapshot",
-        expiresAt: resolveExpiresAt({ expires: body.expires, defaultExpiry: configStore.get().defaultExpiry })
-      });
-      await deployWith(async () => {
-        draft.publication.publicUrl = await pagesPublisher.publish({
-          report: draft.report,
-          publication: draft.publication,
-          pagesConfig: configStore.get().pages
+      const expiresAt = resolveExpiresAt({ expires: body.expires, defaultExpiry: configStore.get().defaultExpiry });
+      const draft = store.draftPublication(report.id, { kind: "snapshot", expiresAt });
+      // An expiring or password-protected link needs an edge gate built from
+      // COMMITTED snapshots, so commit before the first deploy (else it ships
+      // ungated until a later redeploy). Deploy in place (syncPublication) and
+      // revoke on failure. Plain permanent links keep the publish-then-commit path.
+      const gated = Boolean(expiresAt) || store.get(report.id).passwordProtected === true;
+      if (gated) {
+        await store.commitPublication(report.id, draft.publication);
+      }
+      try {
+        await deployWith(async () => {
+          draft.publication.publicUrl = await (gated
+            ? pagesPublisher.syncPublication
+            : pagesPublisher.publish)({
+            report: store.get(report.id),
+            publication: draft.publication,
+            pagesConfig: configStore.get().pages
+          });
         });
-      });
-      publication = (await store.commitPublication(report.id, draft.publication)).publication;
+      } catch (error) {
+        if (gated) {
+          await store.revokePublication(draft.publication.token).catch(() => {});
+        }
+        throw error;
+      }
+      publication = gated
+        ? (await store.syncSnapshot(draft.publication.token)).publication
+        : (await store.commitPublication(report.id, draft.publication)).publication;
     }
 
     const formatted = store.formatPublication(publication, options);
