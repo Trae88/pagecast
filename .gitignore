@@ -4,6 +4,7 @@ pagecast-extension.zip
 node_modules/
 web/node_modules/
 web/dist/
+*.tsbuildinfo
 npm-debug.log*
 coverage/
 .DS_Store

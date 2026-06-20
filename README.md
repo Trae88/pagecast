@@ -160,6 +160,21 @@ Common headless errors:
 - `{"ok":false,"statusCode":409}`: pass `--account <account-id>`, or run
   `npx pagecast` once and choose the Cloudflare account.
 
+## Password Protection
+
+Gate any published page behind a password. Turn it on from the admin UI (the
+**Password protection** toggle) or headlessly when publishing:
+
+```sh
+npx pagecast publish "/absolute/path/report.html" --password "your-password" --json
+npx pagecast publish "/absolute/path/report.html" --no-password --json   # remove it
+```
+
+Protection is enforced at the edge by a generated Cloudflare Pages Function, so
+it covers every file of a multi-file report and the page is never served
+unprotected. Crypto, security model, and caveats are in
+[PASSWORD-PROTECTION.md](PASSWORD-PROTECTION.md).
+
 ## Cloudflare Pages Commands
 
 Pagecast wraps the Wrangler commands needed for normal Pages publishing:
@@ -254,6 +269,8 @@ More detail is in [plugin/README.md](plugin/README.md).
 - Rename a published URL. Old links redirect to the new path.
 - Re-sync a published page in place at the same URL.
 - Enable auto-sync for path-backed reports.
+- Password-protect a published page (edge HTTP Basic Auth). See
+  [PASSWORD-PROTECTION.md](PASSWORD-PROTECTION.md).
 - Edit HTML in the app without overwriting the original source file.
 
 ## Local Development

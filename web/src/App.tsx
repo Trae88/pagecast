@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import {
   Activity,
   AlertCircle,
+  Check,
   CheckCircle2,
   Cloud,
   Copy,
@@ -29,6 +30,7 @@ import {
   GripVertical,
   Link2,
   Loader2,
+  Lock,
   MoreHorizontal,
   PanelLeft,
   Pencil,
@@ -42,6 +44,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Toaster } from "@/components/ui/sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
@@ -71,6 +74,7 @@ import {
   useAutoSync,
   useBuildReport,
   useDeleteReport,
+  usePasswordProtection,
   usePublishSnapshot,
   useReorder,
   useReports,
@@ -135,6 +139,7 @@ export function App() {
   const reports = useReports();
   const publish = usePublishSnapshot();
   const autoSync = useAutoSync();
+  const passwordProtection = usePasswordProtection();
   const build = useBuildReport();
   const deleteReport = useDeleteReport();
   const revokeAll = useRevokeAll();
@@ -325,9 +330,19 @@ export function App() {
                     activities={activities}
                     feedbackEnabled={feedbackEnabled}
                     autoSyncPending={autoSync.isPending}
+                    passwordProtectionPending={passwordProtection.isPending}
                     onBuild={(report) => build.mutate(report.id)}
                     onToggleAutoSync={(report, enabled) =>
                       autoSync.mutate({ id: report.id, enabled })
+                    }
+                    onDisablePassword={(report) =>
+                      passwordProtection.mutate({ id: report.id, enabled: false })
+                    }
+                    onSetPassword={(report, password, onSuccess) =>
+                      passwordProtection.mutate(
+                        { id: report.id, enabled: true, password },
+                        { onSuccess }
+                      )
                     }
                     onPreview={openPreview}
                     onEdit={openEditor}
@@ -712,8 +727,11 @@ function PageWorkspace({
   activities,
   feedbackEnabled,
   autoSyncPending,
+  passwordProtectionPending,
   onBuild,
   onToggleAutoSync,
+  onDisablePassword,
+  onSetPassword,
   onPreview,
   onEdit,
   onPublish,
@@ -733,8 +751,11 @@ function PageWorkspace({
   activities: ActivityItem[];
   feedbackEnabled: boolean;
   autoSyncPending: boolean;
+  passwordProtectionPending: boolean;
   onBuild: (report: Report) => void;
   onToggleAutoSync: (report: Report, enabled: boolean) => void;
+  onDisablePassword: (report: Report) => void;
+  onSetPassword: (report: Report, password: string, onSuccess: () => void) => void;
   onPreview: (report: Report) => void;
   onEdit: (report: Report) => void;
   onPublish: (report: Report) => void;
@@ -742,6 +763,18 @@ function PageWorkspace({
   onRequestDelete: (report: Report) => void;
   onRequestRevokeAll: (report: Report) => void;
 }) {
+  const [passwordDraftOpen, setPasswordDraftOpen] = useState(false);
+  const [passwordDraft, setPasswordDraft] = useState("");
+
+  const reportId = report?.id ?? null;
+  const isProtected = report?.passwordProtected ?? false;
+
+  // Collapse the draft whenever the selected report or its protection changes.
+  useEffect(() => {
+    setPasswordDraftOpen(false);
+    setPasswordDraft("");
+  }, [reportId, isProtected]);
+
   if (isLoading) {
     return (
       <div className="flex min-h-[420px] items-center justify-center rounded-lg border bg-background text-sm text-muted-foreground">
@@ -929,6 +962,81 @@ function PageWorkspace({
                 />
               </div>
             ) : null}
+
+            <div className="space-y-3 rounded-lg border bg-muted/20 px-3 py-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="flex items-center gap-1.5 text-sm font-medium">
+                    Password protection
+                    {report.passwordProtected ? (
+                      <Lock className="h-3.5 w-3.5 text-muted-foreground" />
+                    ) : null}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {report.passwordProtected
+                      ? "Visitors must enter a password"
+                      : "Anyone with the link can view"}
+                  </p>
+                </div>
+                <Switch
+                  checked={report.passwordProtected || passwordDraftOpen}
+                  disabled={passwordProtectionPending}
+                  onCheckedChange={(enabled) => {
+                    if (enabled) {
+                      setPasswordDraft("");
+                      setPasswordDraftOpen(true);
+                      return;
+                    }
+                    setPasswordDraftOpen(false);
+                    onDisablePassword(report);
+                  }}
+                  aria-label="Toggle password protection"
+                />
+              </div>
+              {passwordDraftOpen ? (
+                <div className="flex items-center gap-2">
+                  <Input
+                    autoFocus
+                    type="password"
+                    value={passwordDraft}
+                    onChange={(event) => setPasswordDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && passwordDraft.trim()) {
+                        onSetPassword(report, passwordDraft.trim(), () => {
+                          setPasswordDraft("");
+                          setPasswordDraftOpen(false);
+                        });
+                      }
+                      if (event.key === "Escape") {
+                        setPasswordDraftOpen(false);
+                        setPasswordDraft("");
+                      }
+                    }}
+                    className="h-8"
+                    placeholder="Set a password"
+                    disabled={passwordProtectionPending}
+                    aria-label="Password"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={() =>
+                      onSetPassword(report, passwordDraft.trim(), () => {
+                        setPasswordDraft("");
+                        setPasswordDraftOpen(false);
+                      })
+                    }
+                    disabled={passwordProtectionPending || !passwordDraft.trim()}
+                  >
+                    {passwordProtectionPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Check className="h-4 w-4" />
+                    )}
+                    Set
+                  </Button>
+                </div>
+              ) : null}
+            </div>
 
             {report.kind === "folder" ? (
               <div className="rounded-lg border bg-muted/20 px-3 py-3">

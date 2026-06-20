@@ -1,10 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { motion } from "framer-motion";
 import {
+  Check,
   Eye,
   GripVertical,
+  Loader2,
+  Lock,
   MoreVertical,
   Pencil,
   RefreshCw,
@@ -14,6 +17,7 @@ import {
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
@@ -36,6 +40,7 @@ import { PublicationRow } from "@/components/publication-row";
 import {
   useAutoSync,
   useDeleteReport,
+  usePasswordProtection,
   usePublishSnapshot,
   useRevokeAll
 } from "@/hooks/use-pagecast";
@@ -62,7 +67,40 @@ export function ReportCard({ report, onPreview, onEdit }: ReportCardProps) {
   const revokeAll = useRevokeAll();
   const deleteReport = useDeleteReport();
   const autoSync = useAutoSync();
+  const passwordProtection = usePasswordProtection();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [passwordDraftOpen, setPasswordDraftOpen] = useState(false);
+  const [passwordDraft, setPasswordDraft] = useState("");
+
+  // Collapse the draft input whenever protection state changes underneath us.
+  useEffect(() => {
+    setPasswordDraftOpen(false);
+    setPasswordDraft("");
+  }, [report.passwordProtected]);
+
+  const handlePasswordToggle = (enabled: boolean) => {
+    if (enabled) {
+      setPasswordDraft("");
+      setPasswordDraftOpen(true);
+      return;
+    }
+    setPasswordDraftOpen(false);
+    passwordProtection.mutate({ id: report.id, enabled: false });
+  };
+
+  const commitPassword = () => {
+    const next = passwordDraft.trim();
+    if (!next) return;
+    passwordProtection.mutate(
+      { id: report.id, enabled: true, password: next },
+      {
+        onSuccess: () => {
+          setPasswordDraft("");
+          setPasswordDraftOpen(false);
+        }
+      }
+    );
+  };
 
   const activePublications = report.publications.filter((p) => p.active);
   const hasActive = activePublications.length > 0;
@@ -194,6 +232,65 @@ export function ReportCard({ report, onPreview, onEdit }: ReportCardProps) {
             />
           </div>
         ) : null}
+
+        <div className="space-y-2 border-t px-3 py-2">
+          <div className="flex items-center justify-between">
+            <div className="flex flex-col">
+              <span className="flex items-center gap-1.5 text-xs font-medium">
+                Password protection
+                {report.passwordProtected ? (
+                  <Lock className="h-3 w-3 text-muted-foreground" />
+                ) : null}
+              </span>
+              <span className="text-[11px] text-muted-foreground">
+                {report.passwordProtected
+                  ? "Visitors must enter a password"
+                  : "Anyone with the link can view"}
+              </span>
+            </div>
+            <Switch
+              checked={report.passwordProtected || passwordDraftOpen}
+              disabled={passwordProtection.isPending}
+              onCheckedChange={handlePasswordToggle}
+              aria-label="Toggle password protection"
+            />
+          </div>
+          {passwordDraftOpen ? (
+            <div className="flex items-center gap-1.5">
+              <Input
+                autoFocus
+                type="password"
+                value={passwordDraft}
+                onChange={(event) => setPasswordDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") commitPassword();
+                  if (event.key === "Escape") {
+                    setPasswordDraftOpen(false);
+                    setPasswordDraft("");
+                  }
+                }}
+                className="h-7 text-xs"
+                placeholder="Set a password"
+                disabled={passwordProtection.isPending}
+                aria-label="Password"
+              />
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7"
+                onClick={commitPassword}
+                disabled={passwordProtection.isPending || !passwordDraft.trim()}
+                aria-label="Set password"
+              >
+                {passwordProtection.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Check className="h-3.5 w-3.5" />
+                )}
+              </Button>
+            </div>
+          ) : null}
+        </div>
 
         {hasActive ? (
           <div className="space-y-1.5 border-t bg-muted/20 p-2">

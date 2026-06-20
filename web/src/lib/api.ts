@@ -132,6 +132,12 @@ export const api = {
       { json: { enabled } }
     ),
 
+  setPasswordProtection: (id: string, enabled: boolean, password?: string) =>
+    request<ReportResponse>(
+      `/api/reports/${encodeURIComponent(id)}/password-protection`,
+      { json: { enabled, password } }
+    ),
+
   getContent: (id: string) =>
     request<ContentResponse>(`/api/reports/${encodeURIComponent(id)}/content`),
 
