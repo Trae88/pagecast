@@ -78,6 +78,19 @@ test("extractDescription prefers meta description, else first paragraph text", (
   assert.equal(extractDescription("<div>no para here</div>"), "");
 });
 
+test("extractDescription keeps apostrophes (closing quote matches the opener)", () => {
+  // Regression for the bug Devin caught on PR #3: a double-quoted value with an
+  // apostrophe must not truncate at the apostrophe ("We" instead of "We're …").
+  assert.equal(
+    extractDescription('<meta name="description" content="We\'re up 18% this quarter">'),
+    "We're up 18% this quarter"
+  );
+  assert.equal(
+    extractDescription("<meta name='description' content='She said \"hi\" today'>"),
+    'She said "hi" today'
+  );
+});
+
 // --- integration: publish stages the OG block ------------------------------
 
 function fakeDeploySpawn(command, args, options) {

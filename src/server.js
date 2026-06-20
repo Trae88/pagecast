@@ -1192,9 +1192,11 @@ export function extractDescription(html) {
   const doc = String(html || "");
   const meta = /<meta[^>]+name=["']description["'][^>]*>/i.exec(doc);
   if (meta) {
-    const content = /content=["']([\s\S]*?)["']/i.exec(meta[0]);
-    if (content && content[1].trim()) {
-      return decodeBasicEntities(content[1].replace(/\s+/g, " ").trim()).slice(0, 200);
+    // Backreference the opening quote (\1) so a value containing the other
+    // quote char — e.g. an apostrophe in "We're …" — isn't truncated early.
+    const content = /content=(["'])([\s\S]*?)\1/i.exec(meta[0]);
+    if (content && content[2].trim()) {
+      return decodeBasicEntities(content[2].replace(/\s+/g, " ").trim()).slice(0, 200);
     }
   }
   const para = /<p[^>]*>([\s\S]*?)<\/p>/i.exec(doc);
