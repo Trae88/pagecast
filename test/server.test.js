@@ -713,7 +713,7 @@ test("snapshot publications deploy to Cloudflare Pages and revoke from the stage
 
   const deployCommands = [];
   function fakePagesDeploy(command, args, options) {
-    deployCommands.push({ command, args, accountId: options?.env?.CLOUDFLARE_ACCOUNT_ID || "" });
+    deployCommands.push({ command, args, cwd: options?.cwd, accountId: options?.env?.CLOUDFLARE_ACCOUNT_ID || "" });
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
@@ -782,12 +782,15 @@ test("snapshot publications deploy to Cloudflare Pages and revoke from the stage
       "wrangler",
       "pages",
       "deploy",
-      path.join(dataDir, "pages-site"),
+      ".",
       "--project-name",
       "team-reports",
       "--branch",
       "main"
     ]);
+    // Deploy runs from inside pages-site (path arg "."), so wrangler finds the
+    // generated functions/ + _routes.json (it resolves them relative to cwd).
+    assert.equal(deployCommands[0].cwd, path.join(dataDir, "pages-site"));
     // The account is passed via CLOUDFLARE_ACCOUNT_ID env, not an --account-id
     // flag (which `wrangler pages deploy` does not accept).
     assert.equal(deployCommands[0].accountId, "0123456789abcdef0123456789abcdef");
@@ -1072,7 +1075,7 @@ test("Headless Pages site deploy wraps Wrangler with project, branch, and accoun
 
   const deployCommands = [];
   function fakeDeploy(command, args, options) {
-    deployCommands.push({ command, args, accountId: options.env.CLOUDFLARE_ACCOUNT_ID || "" });
+    deployCommands.push({ command, args, cwd: options.cwd, accountId: options.env.CLOUDFLARE_ACCOUNT_ID || "" });
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
@@ -1113,12 +1116,13 @@ test("Headless Pages site deploy wraps Wrangler with project, branch, and accoun
         "wrangler",
         "pages",
         "deploy",
-        stagingRoot,
+        ".",
         "--project-name",
         "pagecasthq",
         "--branch",
         "main"
       ],
+      cwd: stagingRoot,
       accountId
     }
   ]);
@@ -1153,7 +1157,7 @@ test("Headless Pages site deploy defaults to the main branch when omitted", asyn
 
   const deployCommands = [];
   function fakeDeploy(command, args, options) {
-    deployCommands.push({ command, args, accountId: options.env.CLOUDFLARE_ACCOUNT_ID || "" });
+    deployCommands.push({ command, args, cwd: options.cwd, accountId: options.env.CLOUDFLARE_ACCOUNT_ID || "" });
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();

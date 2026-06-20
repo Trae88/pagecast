@@ -1252,12 +1252,17 @@ export function createCloudflarePagesPublisher({
     const accountId = normalizeAccountId(pagesConfig.accountId || "");
     const deployBranch = normalizePagesBranch(branch);
 
+    // Deploy from INSIDE rootDir (path arg ".") instead of passing rootDir as
+    // the path. `wrangler pages deploy` resolves the Functions directory
+    // relative to the current working directory, NOT the deploy-path argument —
+    // so running from rootDir is what lets our generated functions/_middleware.js
+    // (the password gate) and _routes.json actually get compiled and uploaded.
     const args = [
       "--yes",
       "wrangler",
       "pages",
       "deploy",
-      rootDir,
+      ".",
       "--project-name",
       projectName,
       "--branch",
@@ -1272,6 +1277,7 @@ export function createCloudflarePagesPublisher({
       command: "npx",
       args,
       timeoutMs,
+      cwd: rootDir,
       env: accountId ? { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId } : process.env
     });
 
