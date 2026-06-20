@@ -233,3 +233,61 @@ test("setPasswordProtection validates password and report id", async () => {
     /not be? found|not found/i
   );
 });
+
+// CodeRabbit highlight: keep authCookieSecret server-only at the API boundary.
+test("getPublicConfig strips the cookie-signing secret that get() retains", async () => {
+  const tempDir = await makeTempDir();
+  const configStore = createConfigStore({ dataDir: path.join(tempDir, "data") });
+  await configStore.init();
+
+  const full = configStore.get();
+  assert.ok(full.authCookieSecret, "get() keeps the secret for server-side cookie signing");
+
+  const pub = configStore.getPublicConfig();
+  assert.equal(Object.prototype.hasOwnProperty.call(pub, "authCookieSecret"), false);
+  assert.equal(
+    JSON.stringify(pub).includes(full.authCookieSecret),
+    false,
+    "the cookie-signing secret must never appear in client-facing config"
+  );
+});
+
+// CodeRabbit highlight: rollback symmetry — a failed deploy must not leave a
+// dangling, URL-less active publication.
+test("a failed deploy on a protected publish revokes the dangling snapshot", async () => {
+  const tempDir = await makeTempDir();
+  const dataDir = path.join(tempDir, "data");
+  const reportDir = path.join(tempDir, "report");
+  await fs.mkdir(reportDir, { recursive: true });
+  await fs.writeFile(path.join(reportDir, "report.html"), "<h1>Secret</h1>");
+
+  const { authSpawn } = headlessFakes();
+  function failingDeploy() {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => child.emit("exit", null, "SIGTERM");
+    setImmediate(() => {
+      child.stderr.emit("data", Buffer.from("Deployment failed: simulated edge error"));
+      child.emit("exit", 1, null);
+    });
+    return child;
+  }
+
+  await assert.rejects(() =>
+    publishReportSnapshot({
+      path: path.join(reportDir, "report.html"),
+      password: "letmein",
+      dataDir,
+      cloudflareAuthSpawnImpl: authSpawn,
+      pagesDeploySpawnImpl: failingDeploy,
+      cloudflareListTimeoutMs: 1000,
+      pagesDeployTimeoutMs: 1000
+    })
+  );
+
+  const store = createReportStore({ dataDir });
+  await store.init();
+  const active = store.list().flatMap((r) => r.publications.filter((p) => p.active));
+  assert.equal(active.length, 0, "a failed protected deploy must leave no active snapshot");
+});
