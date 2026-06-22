@@ -140,7 +140,30 @@ The root CLI/server has no runtime npm dependencies. Layout: `src/` (CLI, server
 publisher), `public/` (built UI), `web/` (React source), `plugin/` +
 `.codex/skills/` (agent skills), `test/` (Node tests).
 
+## Contributing
+
+Issues and pull requests are welcome.
+
+1. Fork and branch from `main`.
+2. Make your change. Keep the root CLI/server free of runtime npm dependencies.
+3. Run the verification suite before opening a PR:
+
+   ```sh
+   npm run check && npm test
+   ```
+
+4. Rebuild the admin UI if you touched anything under `web/`:
+
+   ```sh
+   npm run build   # regenerates public/
+   ```
+
+5. Open a PR describing what changed and why.
+
+See the [Development](#development) section for the project layout. Please
+**don't** file public issues for security problems — report them privately
+via [SECURITY.md](SECURITY.md).
+
 ## License
 
-MIT — see [LICENSE](LICENSE). Issues and PRs welcome; run the verification
-commands and rebuild `public/` after changing files under `web/`.
+MIT — see [LICENSE](LICENSE).
