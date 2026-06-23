@@ -80,6 +80,27 @@ Enforced at the edge by a generated Cloudflare Pages Function, so it covers ever
 file of a multi-file report and the page is never served unprotected. Crypto,
 security model, and caveats: [PASSWORD-PROTECTION.md](PASSWORD-PROTECTION.md).
 
+## Deploy History
+
+Every publish or re-sync creates a new Cloudflare Pages deployment — an immutable
+snapshot of your whole site at that moment, each with its own `<hash>.pages.dev`
+URL. Over time these pile up. View and remove them from the admin UI
+(**Settings → Deploy history**) or the terminal:
+
+```sh
+# List recent deployment snapshots (the newest production one is marked live)
+npx pagecast pages deployments list --json
+
+# Remove one snapshot by id (the live deployment is protected and can't be deleted)
+npx pagecast pages deployments delete <id> --json
+
+# Keep the N most recent (incl. live) and remove the rest
+npx pagecast pages deployments prune --keep 5 --yes --json
+```
+
+Snapshots are whole-site, not per-page, so removing one never affects your live
+site or your pages in Pagecast — it just frees up old `<hash>.pages.dev` URLs.
+
 ## Use From Coding Agents
 
 Pagecast ships a Codex-native skill and a portable Agent-Skills file that offer
@@ -117,6 +138,8 @@ See [extension/README.md](extension/README.md).
   or revoke one/all versions.
 - Auto-sync path-backed reports; password-protect pages; edit HTML in-app without
   touching the original source file.
+- View deploy history and remove old whole-site snapshots (the live deploy is
+  protected), with a one-click "keep newest N" cleanup.
 
 ## Security Model
 

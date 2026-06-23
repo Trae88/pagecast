@@ -31,6 +31,9 @@ Use `pagecast --help` to confirm the current interface.
 - Equivalent high-level site deploy: `npx pagecast publish site "/absolute/path/dist" --project pagecasthq --branch main --json`
 - Show Pages status: `npx pagecast pages status --json`
 - List Pages projects: `npx pagecast pages projects list --json`
+- List deployment snapshots: `npx pagecast pages deployments list --json`
+- Delete one deployment snapshot: `npx pagecast pages deployments delete <id> --json`
+- Prune old snapshots, keeping the newest N: `npx pagecast pages deployments prune --keep 5 --yes --json`
 
 ## Notes for agents
 
@@ -42,6 +45,7 @@ Use `pagecast --help` to confirm the current interface.
 - Direct site deploys replace the target Pages project contents.
 - `--branch` is optional for direct site deploys; Pagecast uses `main` by default.
 - Do not call raw `npx wrangler pages deploy` unless Pagecast is unavailable or the user explicitly asks for Wrangler.
+- `pages deployments delete`/`prune` permanently remove whole-site snapshots; confirm with the user first. The live deployment is protected and `prune` requires `--keep <N>` plus `--yes` for non-interactive runs.
 
 ## Error handling
 
