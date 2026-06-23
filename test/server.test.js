@@ -681,6 +681,101 @@ test("Auth manager retries delete with --force for aliased non-production deploy
   assert.ok(captured.filter((item) => item.args.includes("delete")).pop().args.includes("--force"));
 });
 
+test("Deployments API lists, protects the live deploy, deletes, and prunes", async () => {
+  const tempDir = await makeTempDir();
+  const dataDir = path.join(tempDir, "data");
+  const accountId = "abcdef0123456789abcdef0123456789";
+
+  const { fakeSpawn, captured } = makeWranglerFake((args) => {
+    if (args.includes("whoami")) {
+      return { code: 0, output: JSON.stringify({ accounts: [{ name: "Personal", id: accountId }] }) };
+    }
+    if (args.includes("deployment") && args.includes("list")) {
+      return {
+        code: 0,
+        output: JSON.stringify([
+          {
+            id: "prod-live",
+            short_id: "prodlive",
+            url: "https://prodlive.pagecasthq.pages.dev",
+            environment: "production",
+            created_on: "2026-06-20T10:00:00Z"
+          },
+          {
+            id: "preview-old",
+            short_id: "prevold",
+            url: "https://prevold.pagecasthq.pages.dev",
+            environment: "preview",
+            created_on: "2026-06-19T10:00:00Z"
+          }
+        ])
+      };
+    }
+    return { code: 0, output: "" };
+  });
+
+  const runtime = await startServers({
+    adminPort: 0,
+    publicPort: 0,
+    dataDir,
+    staticDir: path.resolve("public"),
+    cloudflareAuthSpawnImpl: fakeSpawn,
+    cloudflareListTimeoutMs: 1000
+  });
+
+  try {
+    // Configure the target project so the deployment routes are active.
+    const configResponse = await fetch(`${runtime.adminUrl}/api/config/pages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectName: "pagecasthq", accountId })
+    });
+    assert.equal(configResponse.status, 200);
+
+    // List: newest production deploy is flagged live.
+    const listResponse = await fetch(`${runtime.adminUrl}/api/deployments`);
+    assert.equal(listResponse.status, 200);
+    const listData = await listResponse.json();
+    assert.equal(listData.configured, true);
+    assert.deepEqual(listData.deployments.map((d) => d.id), ["prod-live", "preview-old"]);
+    assert.equal(listData.deployments.find((d) => d.id === "prod-live").isLive, true);
+    assert.equal(listData.deployments.find((d) => d.id === "preview-old").isLive, false);
+
+    // Deleting the live deploy is refused with 409 and never spawns a delete.
+    const liveDelete = await fetch(`${runtime.adminUrl}/api/deployments/prod-live`, { method: "DELETE" });
+    assert.equal(liveDelete.status, 409);
+    assert.equal(captured.some((item) => item.args.includes("delete")), false);
+
+    // Deleting a non-live deploy succeeds and spawns the wrangler delete.
+    const okDelete = await fetch(`${runtime.adminUrl}/api/deployments/preview-old`, { method: "DELETE" });
+    assert.equal(okDelete.status, 200);
+    const deleteCall = captured.find((item) => item.args.includes("delete"));
+    assert.ok(deleteCall.args.includes("preview-old"));
+    assert.equal(deleteCall.accountId, accountId);
+
+    // Prune keep=1 keeps the live deploy and removes the older preview.
+    const pruneResponse = await fetch(`${runtime.adminUrl}/api/deployments/prune`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keep: 1 })
+    });
+    assert.equal(pruneResponse.status, 200);
+    const pruneData = await pruneResponse.json();
+    assert.equal(pruneData.pruned, 1);
+    assert.deepEqual(pruneData.deleted, ["preview-old"]);
+
+    // Bad keep is rejected.
+    const badPrune = await fetch(`${runtime.adminUrl}/api/deployments/prune`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keep: 0 })
+    });
+    assert.equal(badPrune.status, 400);
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("Cloudflare credential status reports scoped token availability without exposing token", () => {
   assert.deepEqual(cloudflareCredentialStatus({}), {
     authMode: "scoped-oauth",

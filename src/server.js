@@ -4247,6 +4247,112 @@ async function handleApi(
     return;
   }
 
+  // List the Cloudflare Pages deployment snapshots for the configured project.
+  // Each is a whole-site immutable deploy; the live one is flagged so the client
+  // can protect it from deletion.
+  if (url.pathname === "/api/deployments" && req.method === "GET") {
+    const pages = configStore.get().pages;
+    if (!pages.projectName) {
+      sendJson(res, 200, { deployments: [], projectName: "", baseUrl: "", configured: false });
+      return;
+    }
+    const credential = cloudflareCredentialStatus();
+    if (!credential.tokenConfigured) {
+      const session = cloudflareAuth.isSessionInitialized()
+        ? cloudflareAuth.cachedSession()
+        : await cloudflareAuth.refreshSession();
+      if (!session.loggedIn) {
+        throw appError(cloudflareAuthRequiredMessage(), 401);
+      }
+    }
+    const deployments = await deployQueue.enqueue(() =>
+      cloudflareAuth.listDeployments({ projectName: pages.projectName, accountId: pages.accountId })
+    );
+    sendJson(res, 200, {
+      deployments: flagLiveDeployment(deployments, { baseUrl: pages.baseUrl }),
+      projectName: pages.projectName,
+      baseUrl: pages.baseUrl,
+      configured: true
+    });
+    return;
+  }
+
+  // Delete one deployment snapshot. Refuses the live deployment up front (409)
+  // so the user never hits Cloudflare's guaranteed rejection.
+  const deploymentMatch = /^\/api\/deployments\/([^/]+)$/.exec(url.pathname);
+  if (deploymentMatch && req.method === "DELETE") {
+    const id = decodeURIComponent(deploymentMatch[1]);
+    const force = url.searchParams.get("force") === "1" || url.searchParams.get("force") === "true";
+    const pages = configStore.get().pages;
+    if (!pages.projectName) {
+      throw appError("No Cloudflare Pages project is configured.", 400);
+    }
+    await deployQueue.enqueue(async () => {
+      const current = flagLiveDeployment(
+        await cloudflareAuth.listDeployments({ projectName: pages.projectName, accountId: pages.accountId }),
+        { baseUrl: pages.baseUrl }
+      );
+      const target = current.find((deployment) => deployment.id === id);
+      if (target?.isLive) {
+        throw appError("This is the live deployment and can't be deleted. Publish a newer one first.", 409);
+      }
+      await cloudflareAuth.deleteDeployment({
+        id,
+        projectName: pages.projectName,
+        accountId: pages.accountId,
+        force,
+        environment: target?.environment || ""
+      });
+    });
+    sendJson(res, 200, { deleted: true, id });
+    return;
+  }
+
+  // Prune old snapshots: keep the N newest (incl. live), delete the rest
+  // oldest-first, serially. Reports partial success rather than failing the batch.
+  if (url.pathname === "/api/deployments/prune" && req.method === "POST") {
+    const body = await readJsonBody(req);
+    const keep = Number(body.keep);
+    if (!Number.isInteger(keep) || keep < 1) {
+      throw appError("`keep` must be an integer of at least 1.", 400);
+    }
+    const pages = configStore.get().pages;
+    if (!pages.projectName) {
+      throw appError("No Cloudflare Pages project is configured.", 400);
+    }
+    const summary = await deployQueue.enqueue(async () => {
+      const flagged = flagLiveDeployment(
+        await cloudflareAuth.listDeployments({ projectName: pages.projectName, accountId: pages.accountId }),
+        { baseUrl: pages.baseUrl }
+      );
+      const toDelete = selectDeploymentsToPrune(flagged, keep);
+      const deleted = [];
+      const failed = [];
+      for (const deployment of toDelete) {
+        try {
+          await cloudflareAuth.deleteDeployment({
+            id: deployment.id,
+            projectName: pages.projectName,
+            accountId: pages.accountId,
+            force: deployment.environment !== "production",
+            environment: deployment.environment
+          });
+          deleted.push(deployment.id);
+        } catch (error) {
+          failed.push({ id: deployment.id, error: error.message });
+        }
+      }
+      return { deleted, failed };
+    });
+    sendJson(res, 200, {
+      pruned: summary.deleted.length,
+      kept: keep,
+      deleted: summary.deleted,
+      failed: summary.failed
+    });
+    return;
+  }
+
   if (url.pathname === "/api/reports" && req.method === "GET") {
     sendJson(res, 200, { reports: store.list(options) });
     return;
