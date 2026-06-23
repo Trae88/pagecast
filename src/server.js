@@ -5256,6 +5256,151 @@ export async function listCloudflarePagesProjects({
   };
 }
 
+// Resolve a headless Cloudflare context for deployment-history commands: the
+// configured project + a usable account id, with the same auth/account guards
+// as listCloudflarePagesProjects (401 when signed out, 409 when ambiguous).
+async function resolveHeadlessDeploymentContext({
+  accountId,
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS
+} = {}) {
+  const { configStore, cloudflareAuth } = await createHeadlessCloudflareContext({
+    dataDir,
+    cloudflareAuthSpawnImpl,
+    cloudflareListTimeoutMs
+  });
+  const current = await applyPagesSelection({ configStore, accountId });
+  const pages = current.pages;
+  if (!pages.projectName) {
+    throw appError("No Cloudflare Pages project configured. Run `npx pagecast pages setup` first.", 400);
+  }
+  const credential = cloudflareCredentialStatus();
+  const envAccountId = normalizeAccountIdSafe(process.env.CLOUDFLARE_ACCOUNT_ID);
+  let selectedAccountId = normalizeAccountIdSafe(accountId || envAccountId || pages.accountId);
+
+  if (!credential.tokenConfigured) {
+    const session = await cloudflareAuth.refreshSession();
+    if (!session.loggedIn) {
+      throw appError(cloudflareAuthRequiredMessage(), 401);
+    }
+    if (!selectedAccountId && session.accounts.length === 1) {
+      selectedAccountId = session.accounts[0].id;
+    }
+    if (!selectedAccountId && session.accounts.length > 1) {
+      throw appError("Multiple Cloudflare accounts found. Re-run with `--account <account-id>`.", 409);
+    }
+  }
+  if (credential.tokenConfigured && !selectedAccountId) {
+    throw appError("Cloudflare API token mode requires CLOUDFLARE_ACCOUNT_ID or --account.", 401);
+  }
+
+  return { cloudflareAuth, pages, accountId: selectedAccountId };
+}
+
+export async function listCloudflarePagesDeployments({
+  accountId,
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS
+} = {}) {
+  const ctx = await resolveHeadlessDeploymentContext({
+    accountId,
+    dataDir,
+    cloudflareAuthSpawnImpl,
+    cloudflareListTimeoutMs
+  });
+  const deployments = await ctx.cloudflareAuth.listDeployments({
+    projectName: ctx.pages.projectName,
+    accountId: ctx.accountId
+  });
+  return {
+    deployments: flagLiveDeployment(deployments, { baseUrl: ctx.pages.baseUrl }),
+    projectName: ctx.pages.projectName,
+    baseUrl: ctx.pages.baseUrl
+  };
+}
+
+export async function deleteCloudflarePagesDeployment({
+  id,
+  force = false,
+  accountId,
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS
+} = {}) {
+  const deployId = String(id || "").trim();
+  if (!deployId) {
+    throw appError("A deployment id is required.", 400);
+  }
+  const ctx = await resolveHeadlessDeploymentContext({
+    accountId,
+    dataDir,
+    cloudflareAuthSpawnImpl,
+    cloudflareListTimeoutMs
+  });
+  const current = flagLiveDeployment(
+    await ctx.cloudflareAuth.listDeployments({ projectName: ctx.pages.projectName, accountId: ctx.accountId }),
+    { baseUrl: ctx.pages.baseUrl }
+  );
+  const target = current.find((deployment) => deployment.id === deployId);
+  if (!target) {
+    throw appError(`Deployment ${deployId} was not found for ${ctx.pages.projectName}.`, 404);
+  }
+  if (target.isLive) {
+    throw appError("This is the live deployment and can't be deleted. Publish a newer one first.", 409);
+  }
+  await ctx.cloudflareAuth.deleteDeployment({
+    id: deployId,
+    projectName: ctx.pages.projectName,
+    accountId: ctx.accountId,
+    force,
+    environment: target.environment
+  });
+  return { id: deployId, deleted: true };
+}
+
+export async function pruneCloudflarePagesDeployments({
+  keep,
+  accountId,
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS
+} = {}) {
+  const keepCount = Number(keep);
+  if (!Number.isInteger(keepCount) || keepCount < 1) {
+    throw appError("`keep` must be an integer of at least 1.", 400);
+  }
+  const ctx = await resolveHeadlessDeploymentContext({
+    accountId,
+    dataDir,
+    cloudflareAuthSpawnImpl,
+    cloudflareListTimeoutMs
+  });
+  const flagged = flagLiveDeployment(
+    await ctx.cloudflareAuth.listDeployments({ projectName: ctx.pages.projectName, accountId: ctx.accountId }),
+    { baseUrl: ctx.pages.baseUrl }
+  );
+  const toDelete = selectDeploymentsToPrune(flagged, keepCount);
+  const deleted = [];
+  const failed = [];
+  for (const deployment of toDelete) {
+    try {
+      await ctx.cloudflareAuth.deleteDeployment({
+        id: deployment.id,
+        projectName: ctx.pages.projectName,
+        accountId: ctx.accountId,
+        force: deployment.environment !== "production",
+        environment: deployment.environment
+      });
+      deleted.push(deployment.id);
+    } catch (error) {
+      failed.push({ id: deployment.id, error: error.message });
+    }
+  }
+  return { pruned: deleted.length, kept: keepCount, deleted, failed };
+}
+
 export async function deployCloudflarePagesSite({
   sourceDir,
   projectName,

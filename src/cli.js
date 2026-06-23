@@ -2,13 +2,17 @@
 import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 import {
+  deleteCloudflarePagesDeployment,
   deployCloudflarePagesSite,
   getCloudflarePagesStatus,
   getGoalStatus,
+  listCloudflarePagesDeployments,
   listCloudflarePagesProjects,
+  pruneCloudflarePagesDeployments,
   publishGoalProgress,
   publishReportSnapshot,
   setupCloudflareFeedback,
@@ -37,11 +41,25 @@ function openBrowser(url) {
   }
 }
 
+async function confirmPrompt(question) {
+  if (!process.stdin.isTTY) {
+    return false;
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(question);
+    return /^y(es)?$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
+}
+
 const VALUE_FLAGS = new Set([
   "account",
   "account-id",
   "branch",
   "expires",
+  "keep",
   "label",
   "mode",
   "output",
@@ -171,6 +189,25 @@ function printStatusResult(result, json) {
     console.log(`Account: ${result.cloudflare.accountName}`);
   }
   console.log(`URL: ${result.cloudflare.baseUrl}`);
+}
+
+function printDeploymentsResult(result, json) {
+  if (json) {
+    console.log(JSON.stringify({ ok: true, ...result }));
+    return;
+  }
+  const deployments = result.deployments || [];
+  if (deployments.length === 0) {
+    console.log("No deployments found.");
+    return;
+  }
+  for (const deployment of deployments) {
+    const marker = deployment.isLive ? "● live" : "      ";
+    const created = deployment.createdOn || "";
+    const shortId = (deployment.shortId || deployment.id || "").padEnd(10);
+    const env = (deployment.environment || "").padEnd(10);
+    console.log(`${marker}  ${shortId}  ${env}  ${created}  ${deployment.url || ""}`);
+  }
 }
 
 function printProjectsResult(result, json) {
@@ -313,12 +350,87 @@ async function pages(args) {
       return;
     }
 
+    if (subcommand === "deployments") {
+      await deployments(parsed.positionals, parsed);
+      return;
+    }
+
     console.error(`Unknown pages command: ${[subcommand, ...parsed.positionals].filter(Boolean).join(" ")}\n`);
     usage();
     process.exit(1);
   } catch (error) {
     printError(error, json);
   }
+}
+
+async function deployments(positionals, parsed) {
+  const [subcommand, ...rest] = positionals;
+  const json = wantsJson(parsed);
+  const accountId = optionValue(parsed, "account", "account-id");
+
+  if (subcommand === "list" || !subcommand) {
+    const result = await listCloudflarePagesDeployments({ accountId, dataDir });
+    printDeploymentsResult(result, json);
+    return;
+  }
+
+  if (subcommand === "delete") {
+    const id = rest[0];
+    if (!id) {
+      printError({ message: "Usage: pagecast pages deployments delete <id>", statusCode: 400 }, json);
+      return;
+    }
+    const result = await deleteCloudflarePagesDeployment({
+      id,
+      force: parsed.flags.has("force"),
+      accountId,
+      dataDir
+    });
+    if (json) {
+      console.log(JSON.stringify({ ok: true, ...result }));
+    } else {
+      console.log(`Removed deployment ${result.id}.`);
+    }
+    return;
+  }
+
+  if (subcommand === "prune") {
+    const keepCount = Number(optionValue(parsed, "keep"));
+    if (!Number.isInteger(keepCount) || keepCount < 1) {
+      printError({ message: "Usage: pagecast pages deployments prune --keep <N>", statusCode: 400 }, json);
+      return;
+    }
+    if (!parsed.flags.has("yes")) {
+      if (json || !process.stdin.isTTY) {
+        printError(
+          { message: "Refusing to prune without confirmation. Re-run with --yes.", statusCode: 400 },
+          json
+        );
+        return;
+      }
+      const ok = await confirmPrompt(
+        `Delete all but the ${keepCount} most recent deployments? This can't be undone. [y/N] `
+      );
+      if (!ok) {
+        console.log("Cancelled.");
+        return;
+      }
+    }
+    const result = await pruneCloudflarePagesDeployments({ keep: keepCount, accountId, dataDir });
+    if (json) {
+      console.log(JSON.stringify({ ok: true, ...result }));
+    } else {
+      console.log(`Removed ${result.pruned} deployment(s); kept the ${result.kept} most recent.`);
+      if (result.failed.length > 0) {
+        console.log(`${result.failed.length} could not be deleted.`);
+      }
+    }
+    return;
+  }
+
+  console.error(`Unknown deployments command: ${subcommand || ""}\n`);
+  usage();
+  process.exit(1);
 }
 
 async function feedback(args) {
@@ -426,6 +538,9 @@ function usage() {
       "  pagecast pages status [--json]                        Show Cloudflare Pages configuration",
       "  pagecast pages projects list [--json]                 List Cloudflare Pages projects",
       "  pagecast pages deploy <dir> --project <name> [--json] Deploy a static folder to Pages",
+      "  pagecast pages deployments list [--json]              List Cloudflare Pages deployment snapshots",
+      "  pagecast pages deployments delete <id> [--force] [--json]  Remove one deployment snapshot",
+      "  pagecast pages deployments prune --keep <N> [--yes] [--json]  Keep the N newest, remove the rest",
       "  pagecast feedback setup [--account <id>] [--json]     Set up reactions + view analytics",
       "  pagecast feedback status [--json]                     Show feedback configuration",
       "  pagecast goal publish <file> [--slug goal] [--json]   Publish/update a live goal-progress page",
