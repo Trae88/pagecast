@@ -110,7 +110,10 @@ export function DeployHistory({ connected }: DeployHistoryProps) {
                   key={deployment.id}
                   deployment={deployment}
                   onDelete={() => setPendingDelete(deployment)}
-                  deleting={remove.isPending && pendingDelete?.id === deployment.id}
+                  // Drive the in-flight spinner from the mutation's own
+                  // variables: pendingDelete is cleared as soon as the dialog
+                  // closes, so it can't track the deployment being deleted.
+                  deleting={remove.isPending && remove.variables?.id === deployment.id}
                 />
               ))}
             </div>
