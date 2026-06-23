@@ -602,6 +602,85 @@ test("selectDeploymentsToPrune keeps the newest N and never the live deploy", ()
   assert.deepEqual(selectDeploymentsToPrune(flagged, 0).map((d) => d.id).sort(), ["b", "c", "d"]);
 });
 
+test("Auth manager lists deployments via wrangler and passes account through env", async () => {
+  const accountId = "abcdef0123456789abcdef0123456789";
+  const { fakeSpawn, captured } = makeWranglerFake((args) => {
+    if (args.includes("deployment") && args.includes("list")) {
+      return {
+        code: 0,
+        output: JSON.stringify([
+          {
+            id: "dep-1",
+            short_id: "dep1",
+            url: "https://dep1.pagecast.pages.dev",
+            environment: "production",
+            created_on: "2026-06-20T10:00:00Z"
+          }
+        ])
+      };
+    }
+    return { code: 0, output: "" };
+  });
+
+  const auth = createCloudflareAuthManager({ spawnImpl: fakeSpawn, listTimeoutMs: 1000 });
+  const deployments = await auth.listDeployments({ projectName: "pagecasthq", accountId });
+
+  assert.equal(deployments.length, 1);
+  assert.equal(deployments[0].id, "dep-1");
+  const listCall = captured.find((item) => item.args.includes("deployment") && item.args.includes("list"));
+  assert.ok(listCall.args.includes("--project-name"));
+  assert.ok(listCall.args.includes("pagecasthq"));
+  // Account is passed via env, never as a CLI flag.
+  assert.equal(listCall.accountId, accountId);
+  assert.ok(!listCall.args.includes("--account-id"));
+});
+
+test("Auth manager deletes a deployment, adding --force only when requested", async () => {
+  const { fakeSpawn, captured } = makeWranglerFake(() => ({ code: 0, output: "" }));
+  const auth = createCloudflareAuthManager({ spawnImpl: fakeSpawn, listTimeoutMs: 1000 });
+
+  await auth.deleteDeployment({ id: "dep-9", projectName: "pagecasthq" });
+  const plain = captured.find((item) => item.args.includes("delete"));
+  assert.deepEqual(plain.args, [
+    "--yes",
+    "wrangler",
+    "pages",
+    "deployment",
+    "delete",
+    "dep-9",
+    "--project-name",
+    "pagecasthq"
+  ]);
+
+  await auth.deleteDeployment({ id: "dep-10", projectName: "pagecasthq", force: true });
+  const forced = captured.filter((item) => item.args.includes("delete")).pop();
+  assert.ok(forced.args.includes("--force"));
+});
+
+test("Auth manager retries delete with --force for aliased non-production deploys", async () => {
+  let deleteCalls = 0;
+  const { fakeSpawn, captured } = makeWranglerFake((args) => {
+    if (args.includes("delete")) {
+      deleteCalls += 1;
+      if (!args.includes("--force")) {
+        return { code: 1, output: "Deployment is aliased. Re-run with --force to delete it." };
+      }
+      return { code: 0, output: "" };
+    }
+    return { code: 0, output: "" };
+  });
+  const auth = createCloudflareAuthManager({ spawnImpl: fakeSpawn, listTimeoutMs: 1000 });
+
+  const result = await auth.deleteDeployment({
+    id: "dep-pre",
+    projectName: "pagecasthq",
+    environment: "preview"
+  });
+  assert.equal(result.deleted, true);
+  assert.equal(deleteCalls, 2);
+  assert.ok(captured.filter((item) => item.args.includes("delete")).pop().args.includes("--force"));
+});
+
 test("Cloudflare credential status reports scoped token availability without exposing token", () => {
   assert.deepEqual(cloudflareCredentialStatus({}), {
     authMode: "scoped-oauth",

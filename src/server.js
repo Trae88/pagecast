@@ -1873,6 +1873,68 @@ export function createCloudflareAuthManager({
     return listProjects(options);
   }
 
+  // List a Pages project's deployment snapshots (the immutable per-deploy
+  // <hash>.pages.dev versions). JSON-first with a plain-text fallback, mirroring
+  // listProjects(): some Wrangler versions exit 1 on `--json`. Returns the
+  // normalized (unflagged) list; callers flag the live one via flagLiveDeployment
+  // since the project base URL lives in config, not here.
+  async function listDeployments({ projectName, accountId = "" } = {}) {
+    const name = normalizePagesProjectName(projectName);
+    const env = accountId ? { CLOUDFLARE_ACCOUNT_ID: accountId } : {};
+    try {
+      const output = await runWrangler(
+        ["pages", "deployment", "list", "--project-name", name, "--json"],
+        listTimeoutMs,
+        env
+      );
+      const deployments = parseWranglerPagesDeployments(output);
+      if (deployments.length > 0) {
+        return deployments;
+      }
+    } catch {
+      // fall through to the text listing
+    }
+    const output = await runWrangler(
+      ["pages", "deployment", "list", "--project-name", name],
+      listTimeoutMs,
+      env
+    );
+    return parseWranglerPagesDeployments(output);
+  }
+
+  // Delete one deployment snapshot by id. `force` adds --force, required for
+  // aliased non-production deployments. Cloudflare refuses the live/latest
+  // production deploy regardless — callers should pre-check isLive. On a
+  // non-force failure that asks for --force, retry once for non-production
+  // deploys only (never force the live production one).
+  async function deleteDeployment({ id, projectName, accountId = "", force = false, environment = "" } = {}) {
+    const name = normalizePagesProjectName(projectName);
+    const deployId = String(id || "").trim();
+    if (!deployId) {
+      throw appError("A deployment id is required.", 400);
+    }
+    const env = accountId ? { CLOUDFLARE_ACCOUNT_ID: accountId } : {};
+    const runDelete = async (useForce) => {
+      const args = ["pages", "deployment", "delete", deployId, "--project-name", name];
+      if (useForce) {
+        args.push("--force");
+      }
+      await runWrangler(args, listTimeoutMs, env);
+    };
+    try {
+      await runDelete(force);
+    } catch (error) {
+      const message = stripAnsi(error.message || "");
+      const needsForce = /--force|aliased|alias/i.test(message);
+      if (needsForce && !force && environment && environment !== "production") {
+        await runDelete(true);
+      } else {
+        throw error;
+      }
+    }
+    return { id: deployId, deleted: true };
+  }
+
   // Returns the Cloudflare accounts visible to the current OAuth session.
   // An empty array means "not logged in". Used to auto-detect the account so
   // the user never has to paste an account ID for the single-account case.
@@ -2047,6 +2109,8 @@ export function createCloudflareAuthManager({
     logout,
     listProjects,
     loginAndListProjects,
+    listDeployments,
+    deleteDeployment,
     whoami,
     ensureProject,
     setupFeedback,
