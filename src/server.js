@@ -694,6 +694,142 @@ export function parseWranglerWhoamiAccounts(output) {
   return parseWranglerWhoamiTable(output);
 }
 
+// --- Cloudflare Pages deployment history: parse `wrangler pages deployment`
+// outputs and flag/select deployments for the view-and-remove feature. --------
+
+function parseWranglerPagesDeploymentTable(output) {
+  // Text fallback for Wrangler versions where `--json` is unsupported. The table
+  // can't carry aliases, so live-detection degrades to the env+date heuristic.
+  const text = stripAnsi(output);
+  const rows = text
+    .split(/\r?\n/)
+    .filter((line) => line.includes("│"))
+    .map((line) => line.split("│").slice(1, -1).map((column) => column.trim()))
+    .filter((columns) => columns.some(Boolean));
+
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const headerIndex = rows.findIndex((columns) =>
+    columns.some((column) => /deployment\s*id|^id$/i.test(column))
+  );
+  if (headerIndex === -1) {
+    return [];
+  }
+
+  const headers = rows[headerIndex].map((column) => column.toLowerCase());
+  const idIndex = headers.findIndex((header) => /deployment\s*id|^id$/.test(header));
+  const envIndex = headers.findIndex((header) => header.includes("environment"));
+  const branchIndex = headers.findIndex((header) => header.includes("branch"));
+  const createdIndex = headers.findIndex((header) => header.includes("created") || header.includes("date"));
+  const urlIndex = headers.findIndex((header) => header.includes("url") || header.includes("source"));
+
+  return rows.slice(headerIndex + 1)
+    .map((columns) => {
+      const id = idIndex >= 0 ? columns[idIndex] : "";
+      if (!id || /deployment\s*id|^id$/i.test(id)) {
+        return null;
+      }
+      return {
+        id,
+        deployment_id: id,
+        environment: envIndex >= 0 ? columns[envIndex] : "",
+        branch: branchIndex >= 0 ? columns[branchIndex] : "",
+        created_on: createdIndex >= 0 ? columns[createdIndex] : "",
+        url: urlIndex >= 0 ? columns[urlIndex] : ""
+      };
+    })
+    .filter(Boolean);
+}
+
+// Normalize `wrangler pages deployment list` output (JSON first, table fallback)
+// into a stable shape. Tolerant of field-name drift across Wrangler versions.
+export function parseWranglerPagesDeployments(output) {
+  let parsed;
+  try {
+    parsed = parseJsonFromCommandOutput(output);
+  } catch {
+    parsed = parseWranglerPagesDeploymentTable(output);
+  }
+
+  const list = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.result)
+      ? parsed.result
+      : Array.isArray(parsed?.deployments)
+        ? parsed.deployments
+        : [];
+
+  return list
+    .map((deployment) => {
+      const id = firstString(deployment?.id, deployment?.deployment_id);
+      if (!id) {
+        return null;
+      }
+      const aliases = Array.isArray(deployment?.aliases)
+        ? deployment.aliases.filter((alias) => typeof alias === "string")
+        : [];
+      return {
+        id,
+        shortId: firstString(deployment?.short_id, deployment?.shortId) || id.slice(0, 8),
+        url: firstString(deployment?.url, deployment?.deployment_url),
+        environment: firstString(deployment?.environment) || "preview",
+        branch: firstString(
+          deployment?.deployment_trigger?.metadata?.branch,
+          deployment?.branch
+        ),
+        createdOn: firstString(deployment?.created_on, deployment?.createdOn, deployment?.created_at),
+        modifiedOn: firstString(deployment?.modified_on, deployment?.modifiedOn, deployment?.modified_at),
+        latestStage: firstString(deployment?.latest_stage?.name, deployment?.latest_stage),
+        isSkipped: deployment?.is_skipped === true,
+        aliases,
+        isLive: false
+      };
+    })
+    .filter(Boolean);
+}
+
+function deploymentTimestamp(deployment) {
+  const parsed = Date.parse(deployment?.modifiedOn || deployment?.createdOn || "");
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+// Flag the single live production deployment so callers can protect it from
+// deletion. Live = the newest non-skipped production deployment, OR (when JSON
+// aliases are present) any production deployment aliased to the project base URL.
+// Returns a NEW list sorted newest-first with `isLive` set.
+export function flagLiveDeployment(deployments, { baseUrl = "" } = {}) {
+  const host = String(baseUrl || "")
+    .replace(/^https?:\/\//, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+  const sorted = [...deployments].sort((a, b) => deploymentTimestamp(b) - deploymentTimestamp(a));
+  const production = sorted.filter((d) => d.environment === "production" && !d.isSkipped);
+  const liveId = production.length > 0 ? production[0].id : "";
+  return sorted.map((deployment) => {
+    const aliasMatch =
+      host &&
+      deployment.environment === "production" &&
+      deployment.aliases.some(
+        (alias) =>
+          alias.replace(/^https?:\/\//, "").replace(/\/+$/, "").toLowerCase() === host
+      );
+    return { ...deployment, isLive: deployment.id === liveId || Boolean(aliasMatch) };
+  });
+}
+
+// Pick which deployments a `keep N` prune should delete: keep the N newest
+// (including the live one), delete the rest oldest-first, NEVER the live one.
+export function selectDeploymentsToPrune(deployments, keep) {
+  const keepCount = Math.max(0, Number.isFinite(keep) ? Math.floor(keep) : 0);
+  const sorted = [...deployments].sort((a, b) => deploymentTimestamp(b) - deploymentTimestamp(a));
+  return sorted
+    .slice(keepCount)
+    .filter((deployment) => !deployment.isLive)
+    .reverse();
+}
+
 async function copyPublicTree(sourceRoot, destinationRoot) {
   await fs.rm(destinationRoot, { recursive: true, force: true });
   await fs.mkdir(destinationRoot, { recursive: true });

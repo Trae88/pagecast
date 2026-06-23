@@ -34,6 +34,9 @@ import {
   normalizeLocalHtmlPath,
   parseMultipartFiles,
   parseWranglerPagesProjects,
+  parseWranglerPagesDeployments,
+  flagLiveDeployment,
+  selectDeploymentsToPrune,
   parseWranglerWhoamiAccounts,
   parseMultipartUpload,
   publishReportSnapshot,
@@ -491,6 +494,112 @@ test("Wrangler Pages project list parsing normalizes selectable projects", () =>
       }
     ]
   );
+});
+
+test("Wrangler Pages deployment list parsing normalizes JSON and table output", () => {
+  const deployments = parseWranglerPagesDeployments(
+    `Fetching deployments...\n${JSON.stringify({
+      result: [
+        {
+          id: "11111111-1111-1111-1111-111111111111",
+          short_id: "1111aaaa",
+          url: "https://1111aaaa.pagecast.pages.dev",
+          environment: "production",
+          created_on: "2026-06-20T10:00:00Z",
+          aliases: ["https://pagecast.pages.dev"],
+          latest_stage: { name: "deploy" },
+          deployment_trigger: { metadata: { branch: "main" } }
+        },
+        {
+          id: "22222222-2222-2222-2222-222222222222",
+          short_id: "2222bbbb",
+          url: "https://2222bbbb.pagecast.pages.dev",
+          environment: "preview",
+          created_on: "2026-06-19T10:00:00Z"
+        },
+        { environment: "preview" }
+      ]
+    })}`
+  );
+
+  assert.equal(deployments.length, 2);
+  assert.deepEqual(deployments[0], {
+    id: "11111111-1111-1111-1111-111111111111",
+    shortId: "1111aaaa",
+    url: "https://1111aaaa.pagecast.pages.dev",
+    environment: "production",
+    branch: "main",
+    createdOn: "2026-06-20T10:00:00Z",
+    modifiedOn: "",
+    latestStage: "deploy",
+    isSkipped: false,
+    aliases: ["https://pagecast.pages.dev"],
+    isLive: false
+  });
+
+  // Text-table fallback when --json is unsupported.
+  const fromTable = parseWranglerPagesDeployments(
+    [
+      "┌──────────────────────────────────────┬─────────────┬──────────────────────┐",
+      "│ Deployment ID                        │ Environment │ Created              │",
+      "├──────────────────────────────────────┼─────────────┼──────────────────────┤",
+      "│ 33333333-3333-3333-3333-333333333333 │ production  │ 2026-06-18T10:00:00Z │",
+      "└──────────────────────────────────────┴─────────────┴──────────────────────┘"
+    ].join("\n")
+  );
+  assert.equal(fromTable.length, 1);
+  assert.equal(fromTable[0].id, "33333333-3333-3333-3333-333333333333");
+  assert.equal(fromTable[0].environment, "production");
+});
+
+test("flagLiveDeployment marks the newest production deploy and protects aliases", () => {
+  const flagged = flagLiveDeployment(
+    [
+      { id: "old-prod", environment: "production", createdOn: "2026-06-10T00:00:00Z", aliases: [], isSkipped: false },
+      { id: "preview", environment: "preview", createdOn: "2026-06-21T00:00:00Z", aliases: [], isSkipped: false },
+      { id: "new-prod", environment: "production", createdOn: "2026-06-20T00:00:00Z", aliases: [], isSkipped: false }
+    ],
+    { baseUrl: "https://pagecast.pages.dev" }
+  );
+
+  // Newest-first ordering and exactly one live (the newest production deploy),
+  // even though a preview is more recent.
+  assert.deepEqual(flagged.map((d) => d.id), ["preview", "new-prod", "old-prod"]);
+  assert.deepEqual(flagged.filter((d) => d.isLive).map((d) => d.id), ["new-prod"]);
+
+  // A production deploy aliased to the base URL is also protected.
+  const aliased = flagLiveDeployment(
+    [
+      { id: "newest", environment: "production", createdOn: "2026-06-22T00:00:00Z", aliases: [], isSkipped: false },
+      {
+        id: "aliased",
+        environment: "production",
+        createdOn: "2026-06-01T00:00:00Z",
+        aliases: ["https://pagecast.pages.dev"],
+        isSkipped: false
+      }
+    ],
+    { baseUrl: "https://pagecast.pages.dev" }
+  );
+  assert.deepEqual(aliased.filter((d) => d.isLive).map((d) => d.id).sort(), ["aliased", "newest"]);
+});
+
+test("selectDeploymentsToPrune keeps the newest N and never the live deploy", () => {
+  const flagged = flagLiveDeployment(
+    [
+      { id: "a", environment: "production", createdOn: "2026-06-05T00:00:00Z", aliases: [], isSkipped: false },
+      { id: "b", environment: "preview", createdOn: "2026-06-04T00:00:00Z", aliases: [], isSkipped: false },
+      { id: "c", environment: "preview", createdOn: "2026-06-03T00:00:00Z", aliases: [], isSkipped: false },
+      { id: "d", environment: "preview", createdOn: "2026-06-02T00:00:00Z", aliases: [], isSkipped: false }
+    ],
+    { baseUrl: "" }
+  );
+  // "a" is live (newest production). Keep 2 newest (a, b) → delete c, d oldest-first.
+  assert.deepEqual(selectDeploymentsToPrune(flagged, 2).map((d) => d.id), ["d", "c"]);
+  // keep >= count → nothing to delete.
+  assert.deepEqual(selectDeploymentsToPrune(flagged, 4), []);
+  // keep 0 → delete everything except the live deploy.
+  assert.deepEqual(selectDeploymentsToPrune(flagged, 0).map((d) => d.id).sort(), ["b", "c", "d"]);
 });
 
 test("Cloudflare credential status reports scoped token availability without exposing token", () => {
