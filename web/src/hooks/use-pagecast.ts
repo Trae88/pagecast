@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api";
 import { activityMessage, emitActivity } from "@/lib/activity";
 import type {
+  DeploymentsResponse,
   PublishResponse,
   Report,
   ReportsResponse,
@@ -16,6 +17,7 @@ import type {
 
 const STATUS_KEY = ["status"] as const;
 const REPORTS_KEY = ["reports"] as const;
+const DEPLOYMENTS_KEY = ["deployments"] as const;
 
 export function useStatus() {
   return useQuery<StatusResponse>({
@@ -460,6 +462,69 @@ export function useFeedbackSetup() {
       const message = errorMessage(error, "Could not set up feedback.");
       toast.error(message);
       emitActivity({ status: "error", title: "Feedback setup failed", message });
+    }
+  });
+}
+
+// Cloudflare Pages deployment snapshots (the whole-site deploy history). Gated
+// on a live Cloudflare connection so it never spawns wrangler when signed out.
+export function useDeployments(enabled: boolean) {
+  return useQuery<DeploymentsResponse>({
+    queryKey: DEPLOYMENTS_KEY,
+    queryFn: api.getDeployments,
+    enabled,
+    refetchInterval: 30_000
+  });
+}
+
+function invalidateDeployments(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: DEPLOYMENTS_KEY });
+}
+
+// Delete is irreversible and the live flag is recomputed server-side, so we
+// invalidate (re-list from Cloudflare) rather than optimistically drop a row.
+export function useDeleteDeployment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, force }: { id: string; force?: boolean }) =>
+      api.deleteDeployment(id, force ?? false),
+    onSuccess: () => {
+      toast.success("Snapshot deleted.");
+      emitActivity({ status: "success", title: "Deployment snapshot deleted" });
+      invalidateDeployments(queryClient);
+    },
+    onError: (error) => {
+      const message = errorMessage(error, "Could not delete snapshot.");
+      toast.error(message);
+      emitActivity({ status: "error", title: "Snapshot delete failed", message });
+    }
+  });
+}
+
+export function usePruneDeployments() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (keep: number) => api.pruneDeployments(keep),
+    onSuccess: (data) => {
+      const failedCount = data.failed.length;
+      if (failedCount > 0) {
+        toast.message(
+          `Removed ${data.pruned} snapshot(s). ${failedCount} couldn't be deleted.`
+        );
+      } else {
+        toast.success(`Cleaned up ${data.pruned} old snapshot(s).`);
+      }
+      emitActivity({
+        status: failedCount > 0 ? "error" : "success",
+        title: "Old snapshots cleaned up",
+        message: `Removed ${data.pruned}, kept ${data.kept} newest`
+      });
+      invalidateDeployments(queryClient);
+    },
+    onError: (error) => {
+      const message = errorMessage(error, "Could not clean up snapshots.");
+      toast.error(message);
+      emitActivity({ status: "error", title: "Snapshot cleanup failed", message });
     }
   });
 }

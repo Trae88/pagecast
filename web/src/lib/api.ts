@@ -1,8 +1,11 @@
 import type {
   ConfigResponse,
   ContentResponse,
+  DeleteDeploymentResponse,
+  DeploymentsResponse,
   FeedbackSetupResponse,
   FeedbackStatsResponse,
+  PruneDeploymentsResponse,
   PublishResponse,
   Report,
   ReportResponse,
@@ -194,5 +197,18 @@ export const api = {
   feedbackStats: (slug: string) =>
     request<FeedbackStatsResponse>(
       `/api/feedback/stats?slug=${encodeURIComponent(slug)}`
-    )
+    ),
+
+  getDeployments: () => request<DeploymentsResponse>("/api/deployments"),
+
+  deleteDeployment: (id: string, force = false) =>
+    request<DeleteDeploymentResponse>(
+      `/api/deployments/${encodeURIComponent(id)}${force ? "?force=1" : ""}`,
+      { method: "DELETE" }
+    ),
+
+  pruneDeployments: (keep: number) =>
+    request<PruneDeploymentsResponse>("/api/deployments/prune", {
+      json: { keep }
+    })
 };
