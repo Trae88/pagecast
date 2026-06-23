@@ -768,10 +768,17 @@ async function runSpawnCommand({
     timer.unref?.();
 
     try {
+      // On Windows, `npx` is a `.cmd` shim that CreateProcess cannot launch
+      // directly (modern Node also refuses to spawn .cmd/.bat without a shell),
+      // so spawn it through the shell. Scoped to `npx`: its args here are
+      // constant tokens plus a validated project slug, branch, and 32-hex
+      // account id, so there is nothing untrusted to escape — while other
+      // callers (e.g. the `sh -lc` build runner) keep direct argv semantics.
       child = spawnImpl(command, args, {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
-        env
+        env,
+        shell: process.platform === "win32" && command === "npx"
       });
     } catch (error) {
       fail(appError(`${command} could not start.`, 502));
@@ -818,7 +825,9 @@ export function trimPastedLocalPathInput(inputPath) {
 
 function coercePastedValueToLocalPath(value) {
   const schemeMatch = /^([a-zA-Z][a-zA-Z\d+.-]*):/.exec(value);
-  if (!schemeMatch) {
+  // A single-letter "scheme" is a Windows drive letter (e.g. `C:\...`), not a URL
+  // scheme — treat it as a local path. (Real URL schemes are always 2+ chars.)
+  if (!schemeMatch || schemeMatch[1].length === 1) {
     return value.replace(/^~(?=$|\/)/, os.homedir());
   }
 
