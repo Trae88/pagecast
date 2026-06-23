@@ -531,6 +531,7 @@ test("Wrangler Pages deployment list parsing normalizes JSON and table output", 
     branch: "main",
     createdOn: "2026-06-20T10:00:00Z",
     modifiedOn: "",
+    status: "deploy",
     latestStage: "deploy",
     isSkipped: false,
     aliases: ["https://pagecast.pages.dev"],
@@ -543,13 +544,60 @@ test("Wrangler Pages deployment list parsing normalizes JSON and table output", 
       "┌──────────────────────────────────────┬─────────────┬──────────────────────┐",
       "│ Deployment ID                        │ Environment │ Created              │",
       "├──────────────────────────────────────┼─────────────┼──────────────────────┤",
-      "│ 33333333-3333-3333-3333-333333333333 │ production  │ 2026-06-18T10:00:00Z │",
+      "│ 33333333-3333-3333-3333-333333333333 │ Production  │ 2026-06-18T10:00:00Z │",
       "└──────────────────────────────────────┴─────────────┴──────────────────────┘"
     ].join("\n")
   );
   assert.equal(fromTable.length, 1);
   assert.equal(fromTable[0].id, "33333333-3333-3333-3333-333333333333");
+  // Capitalized "Production" from the text table is normalized to lowercase.
   assert.equal(fromTable[0].environment, "production");
+  // shortId falls back to the first 8 chars of the id when none is provided.
+  assert.equal(fromTable[0].shortId, "33333333");
+});
+
+test("Wrangler Pages deployment list parsing handles wrangler's PascalCase CLI JSON", () => {
+  // The actual `wrangler pages deployment list --json` output uses column-named
+  // PascalCase keys with a relative "Status" string and no created_on/short_id.
+  const deployments = parseWranglerPagesDeployments(
+    JSON.stringify([
+      {
+        Id: "bc71ab77-7c33-4b16-92f8-9e9945cd425f",
+        Environment: "Production",
+        Branch: "main",
+        Source: "69997bf",
+        Deployment: "https://bc71ab77.pagecasthq.pages.dev",
+        Status: "2 days ago",
+        Build: "https://dash.cloudflare.com/acct/pages/view/pagecasthq/bc71ab77"
+      },
+      {
+        Id: "62338d1c-51eb-4eeb-a48e-83b1e468f9a5",
+        Environment: "Production",
+        Branch: "main",
+        Source: "fb0b51b",
+        Deployment: "https://62338d1c.pagecasthq.pages.dev",
+        Status: "1 week ago"
+      }
+    ])
+  );
+
+  assert.equal(deployments.length, 2);
+  assert.equal(deployments[0].id, "bc71ab77-7c33-4b16-92f8-9e9945cd425f");
+  assert.equal(deployments[0].shortId, "bc71ab77");
+  assert.equal(deployments[0].environment, "production");
+  assert.equal(deployments[0].url, "https://bc71ab77.pagecasthq.pages.dev");
+  assert.equal(deployments[0].status, "2 days ago");
+  assert.equal(deployments[0].branch, "main");
+
+  // The newest production deploy (insertion order, since no timestamps) is live.
+  const flagged = flagLiveDeployment(deployments, { baseUrl: "https://pagecasthq.pages.dev" });
+  assert.deepEqual(flagged.filter((d) => d.isLive).map((d) => d.id), [
+    "bc71ab77-7c33-4b16-92f8-9e9945cd425f"
+  ]);
+  // Older production deploys are prunable; the live one is never selected.
+  assert.deepEqual(selectDeploymentsToPrune(flagged, 1).map((d) => d.id), [
+    "62338d1c-51eb-4eeb-a48e-83b1e468f9a5"
+  ]);
 });
 
 test("flagLiveDeployment marks the newest production deploy and protects aliases", () => {

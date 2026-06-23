@@ -763,7 +763,10 @@ export function parseWranglerPagesDeployments(output) {
 
   return list
     .map((deployment) => {
-      const id = firstString(deployment?.id, deployment?.deployment_id);
+      // Wrangler's CLI `--json` emits PascalCase, column-named fields
+      // (Id/Environment/Deployment/Status), while the REST API and the text
+      // table use snake_case/lowercase. Read every known casing.
+      const id = firstString(deployment?.id, deployment?.Id, deployment?.deployment_id);
       if (!id) {
         return null;
       }
@@ -773,14 +776,30 @@ export function parseWranglerPagesDeployments(output) {
       return {
         id,
         shortId: firstString(deployment?.short_id, deployment?.shortId) || id.slice(0, 8),
-        url: firstString(deployment?.url, deployment?.deployment_url),
-        environment: firstString(deployment?.environment) || "preview",
+        url: firstString(deployment?.url, deployment?.Deployment, deployment?.deployment_url),
+        // Normalize case: JSON returns "production"/"preview"; wrangler's CLI
+        // JSON and the text table yield "Production"/"Preview". Downstream live
+        // detection compares against "production", so lowercase it here.
+        environment: (
+          firstString(deployment?.environment, deployment?.Environment) || "preview"
+        ).toLowerCase(),
         branch: firstString(
           deployment?.deployment_trigger?.metadata?.branch,
-          deployment?.branch
+          deployment?.branch,
+          deployment?.Branch
         ),
+        // ISO timestamp when present (REST shape). Wrangler's CLI JSON omits it
+        // and lists newest-first, so live-detection's stable sort preserves order.
         createdOn: firstString(deployment?.created_on, deployment?.createdOn, deployment?.created_at),
         modifiedOn: firstString(deployment?.modified_on, deployment?.modifiedOn, deployment?.modified_at),
+        // A human-friendly age/stage for display when no ISO timestamp exists
+        // (wrangler's CLI JSON puts e.g. "2 days ago" in Status).
+        status: firstString(
+          deployment?.Status,
+          deployment?.latest_stage?.name,
+          deployment?.latest_stage,
+          deployment?.status
+        ),
         latestStage: firstString(deployment?.latest_stage?.name, deployment?.latest_stage),
         isSkipped: deployment?.is_skipped === true,
         aliases,

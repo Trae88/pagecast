@@ -64,6 +64,7 @@ import {
   AlertDialogTitle
 } from "@/components/ui/alert-dialog";
 import { CloudflareConnect } from "@/components/cloudflare-connect";
+import { DeployHistory } from "@/components/deploy-history";
 import { FeedbackCard } from "@/components/feedback-card";
 import { DefaultExpiryCard } from "@/components/default-expiry-card";
 import { FeedbackStatsPanel } from "@/components/feedback-stats";
@@ -1363,6 +1364,7 @@ function SettingsView({
           </p>
         </div>
         <CloudflareConnect cloudflare={cloudflare} />
+        <DeployHistory connected={connected} />
         <DefaultExpiryCard defaultExpiry={defaultExpiry} />
         <FeedbackCard connected={connected} feedback={feedback} />
       </section>

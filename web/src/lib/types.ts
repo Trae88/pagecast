@@ -57,6 +57,9 @@ export interface Deployment {
   branch: string;
   createdOn: string;
   modifiedOn: string;
+  // Human-friendly age/stage (e.g. "2 days ago") for display when no ISO
+  // createdOn is available.
+  status: string;
   latestStage: string;
   isSkipped: boolean;
   aliases: string[];
