@@ -4931,7 +4931,7 @@ function closeServer(server) {
 }
 
 export async function startServers({
-  host = DEFAULT_HOST,
+  host = process.env.HOST || DEFAULT_HOST,
   adminPort = Number(process.env.PORT || DEFAULT_ADMIN_PORT),
   publicPort = Number(process.env.PUBLIC_PORT || DEFAULT_PUBLIC_PORT),
   dataDir = path.join(PROJECT_ROOT, ".pagecast"),

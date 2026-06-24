@@ -1,6 +1,11 @@
 # Runtime data + build deps
 .pagecast/
 .wrangler/
+
+# Local secrets for Docker (the template .env.example stays tracked)
+.env
+.env.*
+!.env.example
 pagecast-extension.zip
 node_modules/
 web/node_modules/

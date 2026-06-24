@@ -1,0 +1,46 @@
+# Keep the build context small and free of local state / secrets.
+# Note: only files COPY'd in the Dockerfile end up in the image anyway; this just
+# speeds up the build and avoids shipping anything sensitive into the context.
+
+.git
+.gitignore
+node_modules
+**/node_modules
+
+# Local pagecast state and Cloudflare/wrangler caches.
+.pagecast
+.wrangler
+
+# Secrets — never into the build context. (.env.example is fine, but unused here.)
+.env
+.env.*
+!.env.example
+
+# The React admin source + heavy assets (the built UI already lives in public/).
+web
+media
+launch
+extension
+plugin
+docs
+test
+*.zip
+*.log
+
+# Agent / tooling config directories.
+.github
+.superplan
+.codex
+.agents
+.amazonq
+.claude
+.claude-plugin
+.cursor
+.gemini
+.opencode
+
+# Docs / Docker meta (not needed at runtime).
+*.md
+Dockerfile
+docker-compose.yml
+.dockerignore
