@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { markdownToHtml } from "./markdown.js";
+import { generateUniqueName } from "./nameGenerator.js";
 import {
   isValidPasswordHash,
   makePasswordHash,
@@ -168,10 +169,20 @@ function createReportId(fileName) {
   return `${slugifyReportName(fileName)}-${randomBytes(4).toString("hex")}`;
 }
 
-function createPublicToken(label) {
-  // 16 bytes = 128 bits of entropy. The unguessable token IS the access-control
-  // model for /p/<token>/ links, so keep it well beyond brute-forceable.
-  return `${slugifyReportName(label)}-${randomBytes(16).toString("hex")}`;
+// Recover the human-readable name from a public token. New tokens ARE the name
+// (e.g. "hollow-paperclip"); this also strips the trailing "-<32 hex>" tail from
+// any legacy token (e.g. "v1-<hex>" -> "v1") so old and new compare cleanly.
+export function publicTokenNamePrefix(token) {
+  return String(token || "").replace(/-[0-9a-f]{32}$/i, "");
+}
+
+// A published page's URL slug is now a memorable all-words name with NO random
+// tail (e.g. /p/hollow-paperclip/). Uniqueness comes from the very large word
+// library plus a per-publish collision check (isNameTaken); see nameGenerator.js.
+// NOTE: without the old entropy tail the slug is guessable, so it is no longer an
+// access-control boundary — sensitive pages must use password protection.
+export function createPublicToken(isNameTaken = () => false) {
+  return generateUniqueName(isNameTaken);
 }
 
 function isPathInside(rootDir, targetPath) {
@@ -2666,7 +2677,32 @@ export function createReportStore({
 
     const createdAt = nowIso();
     const cleanLabel = slugifyReportName(label || nextPublicationLabel(report));
-    const token = createPublicToken(cleanLabel);
+    // The slug now carries no random tail, so it must be unique on its own.
+    // Collect every existing slug (and any legacy name prefix) and re-roll the
+    // generated name until it does not collide.
+    const takenNames = new Set();
+    for (const existing of reports.values()) {
+      for (const publication of existing.publications || []) {
+        // Reserve the token AND the slug (and their name prefixes). A renamed
+        // publication keeps its original `token` as its identity even though the
+        // `slug` changed, so reserving only the slug would let the old token be
+        // reissued and break findPublication/revoke/sync.
+        const tokenName = publication.token;
+        const slugName = publication.slug || tokenName;
+        for (const name of [tokenName, slugName, publicTokenNamePrefix(tokenName), publicTokenNamePrefix(slugName)]) {
+          if (name) takenNames.add(name);
+        }
+      }
+    }
+    // Renamed slugs leave a /p/<old>/ redirect; reserve those too, since a new
+    // slug equal to an old redirect source would silently steal that route.
+    for (const entry of redirects) {
+      const fromMatch = /^\/p\/([^/]+)\/?$/.exec(entry.from);
+      if (fromMatch) {
+        takenNames.add(decodeURIComponent(fromMatch[1]));
+      }
+    }
+    const token = createPublicToken((name) => takenNames.has(name));
     const publication = {
       token,
       slug: token,
