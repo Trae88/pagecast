@@ -52,7 +52,7 @@ import { markdownToHtml, renderMarkdownBody } from "../src/markdown.js";
 function makeWranglerFake(handlers) {
   const captured = [];
   function fakeSpawn(command, args, options) {
-    captured.push({ command, args, accountId: options.env.CLOUDFLARE_ACCOUNT_ID || "" });
+    captured.push({ command, args, cwd: options.cwd, accountId: options.env.CLOUDFLARE_ACCOUNT_ID || "" });
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
@@ -2775,6 +2775,46 @@ test("admin server rejects requests with a non-loopback Host header (DNS rebindi
   }
 });
 
+test("a wildcard bind host (0.0.0.0, e.g. in Docker) yields loopback URLs and does not trust Host: 0.0.0.0", async () => {
+  const { request } = await import("node:http");
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "pagecast-wildcard-"));
+  const runtime = await startServers({
+    host: "0.0.0.0",
+    adminPort: 0,
+    publicPort: 0,
+    dataDir,
+    staticDir: path.resolve("public")
+  });
+
+  const callWithHost = (hostHeader) =>
+    new Promise((resolve, reject) => {
+      const port = runtime.adminServer.address().port;
+      const req = request(
+        { host: "127.0.0.1", port, path: "/api/status", method: "GET", headers: { Host: hostHeader } },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode);
+        }
+      );
+      req.on("error", reject);
+      req.end();
+    });
+
+  try {
+    // Client-facing URLs must use a loopback host, never the wildcard bind
+    // address (browsers, incl. Chrome 128+, refuse to connect to 0.0.0.0).
+    assert.match(runtime.adminUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+    assert.match(runtime.publicUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+    // The wildcard bind must NOT make `Host: 0.0.0.0` a trusted loopback host.
+    assert.equal(await callWithHost("0.0.0.0"), 403);
+    // Real loopback Hosts still pass.
+    assert.notEqual(await callWithHost("127.0.0.1"), 403);
+  } finally {
+    await runtime.close();
+    await fs.rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("injectFeedbackWidget adds the widget script before </body> exactly once", () => {
   const html = "<!doctype html><html><head></head><body><h1>Report</h1></body></html>";
   const out = injectFeedbackWidget(html, { url: "https://fb.example.workers.dev", slug: "q3" });
@@ -2902,6 +2942,53 @@ test("setupFeedback creates KV, deploys the worker, and returns the url", async 
   // It actually created (not just listed) because the list was empty.
   assert.ok(calls.some((c) => c.includes("kv namespace create")));
   assert.ok(calls.some((c) => c.includes("deploy")));
+
+  await fs.rm(deployDir, { recursive: true, force: true });
+});
+
+test("setupFeedback deploys with a relative --config from deployDir (space-safe under shell)", async () => {
+  // Regression: with shell:true on Windows (needed to spawn the npx .cmd shim),
+  // cmd.exe splits an unquoted absolute --config path on spaces. The deploy must
+  // run with cwd=deployDir and a RELATIVE config filename so the absolute path
+  // (which may contain spaces, e.g. C:\Users\John Doe\...) never crosses the
+  // command line. cwd is passed to spawn natively and is space-safe.
+  const { fakeSpawn, captured } = makeWranglerFake((args) => {
+    const line = args.join(" ");
+    if (line.includes("kv namespace list")) return { code: 0, output: "[]" };
+    if (line.includes("kv namespace create")) {
+      return { code: 0, output: 'id = "0123456789abcdef0123456789abcdef"' };
+    }
+    if (line.includes("deploy")) {
+      return { code: 0, output: "Uploaded\nhttps://pagecast-feedback.acme.workers.dev" };
+    }
+    return { code: 0, output: "" };
+  });
+
+  const manager = createCloudflareAuthManager({ spawnImpl: fakeSpawn });
+  // A deploy dir whose path contains a space — the case that broke under shell:true.
+  const deployDir = await fs.mkdtemp(path.join(os.tmpdir(), "pagecast fb "));
+  assert.ok(deployDir.includes(" "), "test setup: deployDir should contain a space");
+
+  await manager.setupFeedback({
+    accountId: "90e4c638bea527f464ec6fa7caebfd4e",
+    workerName: "pagecast-feedback",
+    workerSource: "export default { fetch(){} }",
+    statsToken: "tok-123",
+    deployDir
+  });
+
+  const deploy = captured.find((c) => c.args.includes("deploy"));
+  assert.ok(deploy, "wrangler deploy was invoked");
+  // --config is passed RELATIVE: the bare filename, not an absolute path.
+  const i = deploy.args.indexOf("--config");
+  assert.equal(deploy.args[i + 1], "wrangler.toml");
+  // The absolute deployDir path (with its space) never reaches the args.
+  assert.ok(
+    !deploy.args.some((a) => a.includes(deployDir)),
+    "absolute deployDir path must not cross the command line"
+  );
+  // Instead it is supplied via cwd, which spawn passes natively (space-safe).
+  assert.equal(deploy.cwd, deployDir);
 
   await fs.rm(deployDir, { recursive: true, force: true });
 });

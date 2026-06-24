@@ -938,10 +938,19 @@ async function runSpawnCommand({
     timer.unref?.();
 
     try {
+      // On Windows, `npx` is a `.cmd` shim that CreateProcess cannot launch
+      // directly (modern Node also refuses to spawn .cmd/.bat without a shell),
+      // so spawn it through the shell. Scoped to `npx`; other callers (e.g. the
+      // `sh -lc` build runner) keep direct argv semantics. shell:true joins the
+      // args into one unquoted cmd.exe line, so npx callers must keep them free
+      // of spaces and shell metacharacters: slugs/branch/32-hex account id are
+      // validated, and filesystem paths are passed via `cwd` + a relative arg,
+      // never inline.
       child = spawnImpl(command, args, {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
-        env
+        env,
+        shell: process.platform === "win32" && command === "npx"
       });
     } catch (error) {
       fail(appError(`${command} could not start.`, 502));
@@ -988,7 +997,9 @@ export function trimPastedLocalPathInput(inputPath) {
 
 function coercePastedValueToLocalPath(value) {
   const schemeMatch = /^([a-zA-Z][a-zA-Z\d+.-]*):/.exec(value);
-  if (!schemeMatch) {
+  // A single-letter "scheme" is a Windows drive letter (e.g. `C:\...`), not a URL
+  // scheme — treat it as a local path. (Real URL schemes are always 2+ chars.)
+  if (!schemeMatch || schemeMatch[1].length === 1) {
     return value.replace(/^~(?=$|\/)/, os.homedir());
   }
 
@@ -1846,12 +1857,16 @@ export function createCloudflareAuthManager({
   loginTimeoutMs = DEFAULT_CLOUDFLARE_LOGIN_TIMEOUT_MS,
   listTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS
 } = {}) {
-  async function runWrangler(args, timeoutMs, env = {}) {
+  async function runWrangler(args, timeoutMs, env = {}, cwd) {
     const result = await runSpawnCommand({
       spawnImpl,
       command: "npx",
       args: ["--yes", "wrangler", ...args],
       timeoutMs,
+      // Defaults to PROJECT_ROOT in runSpawnCommand when undefined. Callers
+      // pass a cwd so any filesystem path can be given as a relative arg
+      // instead of an absolute one (see the feedback deploy below).
+      cwd,
       env: {
         ...process.env,
         ...env
@@ -2082,10 +2097,15 @@ export function createCloudflareAuthManager({
       await fs.writeFile(path.join(deployDir, "wrangler.toml"), toml, "utf8");
 
       // 3. Deploy. Wrangler resolves `main` relative to the config file's dir.
+      // Run from inside deployDir with a RELATIVE --config so the absolute
+      // path (which may contain spaces, e.g. C:\Users\John Doe\...) never
+      // crosses the cmd.exe command line when npx is spawned with shell:true
+      // on Windows. cwd is passed to spawn natively and is space-safe.
       const deployOut = await runWrangler(
-        ["deploy", "--config", path.join(deployDir, "wrangler.toml")],
+        ["deploy", "--config", "wrangler.toml"],
         timeoutMs,
-        env
+        env,
+        deployDir
       );
       const url = parseWorkerDevUrl(deployOut);
       if (!url) {
@@ -4981,7 +5001,7 @@ function closeServer(server) {
 }
 
 export async function startServers({
-  host = DEFAULT_HOST,
+  host = process.env.HOST || DEFAULT_HOST,
   adminPort = Number(process.env.PORT || DEFAULT_ADMIN_PORT),
   publicPort = Number(process.env.PUBLIC_PORT || DEFAULT_PUBLIC_PORT),
   dataDir = path.join(PROJECT_ROOT, ".pagecast"),
@@ -5029,10 +5049,21 @@ export async function startServers({
     watchManager.register(report.id);
   }
 
+  // `host` may be a wildcard bind address (0.0.0.0 / ::) — correct for listen(),
+  // but invalid as a hostname in client-facing URLs (browsers, incl. Chrome
+  // 128+, refuse to connect to 0.0.0.0). Map wildcard binds to a loopback host
+  // for the URLs we hand back to the admin UI and terminal, and for the admin
+  // host-header allowlist (so a wildcard bind doesn't make `Host: 0.0.0.0`
+  // trusted). `urlHost` stays unbracketed for the allowlist comparison;
+  // `hostForUrl` brackets IPv6 literals (e.g. ::1) so URLs stay well-formed:
+  // http://[::1]:4173, not http://::1:4173.
+  const urlHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  const hostForUrl = urlHost.includes(":") ? `[${urlHost}]` : urlHost;
+
   const publicServer = createServer(createPublicHandler({ store }));
   await listen(publicServer, { host, port: publicPort });
   const actualPublicPort = publicServer.address().port;
-  const localPublicBaseUrl = `http://${host}:${actualPublicPort}`;
+  const localPublicBaseUrl = `http://${hostForUrl}:${actualPublicPort}`;
   let adminBaseUrl = null;
   const tunnelManager = new TunnelManager({
     localUrl: localPublicBaseUrl,
@@ -5052,7 +5083,7 @@ export async function startServers({
       tunnelManager,
       deployQueue,
       watchManager,
-      bindHost: host
+      bindHost: urlHost
     })
   );
 
@@ -5064,7 +5095,7 @@ export async function startServers({
   }
 
   const actualAdminPort = adminServer.address().port;
-  const adminUrl = `http://${host}:${actualAdminPort}`;
+  const adminUrl = `http://${hostForUrl}:${actualAdminPort}`;
   adminBaseUrl = adminUrl;
 
   return {
