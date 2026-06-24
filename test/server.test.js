@@ -34,6 +34,9 @@ import {
   normalizeLocalHtmlPath,
   parseMultipartFiles,
   parseWranglerPagesProjects,
+  parseWranglerPagesDeployments,
+  flagLiveDeployment,
+  selectDeploymentsToPrune,
   parseWranglerWhoamiAccounts,
   parseMultipartUpload,
   publishReportSnapshot,
@@ -491,6 +494,334 @@ test("Wrangler Pages project list parsing normalizes selectable projects", () =>
       }
     ]
   );
+});
+
+test("Wrangler Pages deployment list parsing normalizes JSON and table output", () => {
+  const deployments = parseWranglerPagesDeployments(
+    `Fetching deployments...\n${JSON.stringify({
+      result: [
+        {
+          id: "11111111-1111-1111-1111-111111111111",
+          short_id: "1111aaaa",
+          url: "https://1111aaaa.pagecast.pages.dev",
+          environment: "production",
+          created_on: "2026-06-20T10:00:00Z",
+          aliases: ["https://pagecast.pages.dev"],
+          latest_stage: { name: "deploy" },
+          deployment_trigger: { metadata: { branch: "main" } }
+        },
+        {
+          id: "22222222-2222-2222-2222-222222222222",
+          short_id: "2222bbbb",
+          url: "https://2222bbbb.pagecast.pages.dev",
+          environment: "preview",
+          created_on: "2026-06-19T10:00:00Z"
+        },
+        { environment: "preview" }
+      ]
+    })}`
+  );
+
+  assert.equal(deployments.length, 2);
+  assert.deepEqual(deployments[0], {
+    id: "11111111-1111-1111-1111-111111111111",
+    shortId: "1111aaaa",
+    url: "https://1111aaaa.pagecast.pages.dev",
+    environment: "production",
+    branch: "main",
+    createdOn: "2026-06-20T10:00:00Z",
+    modifiedOn: "",
+    status: "deploy",
+    latestStage: "deploy",
+    isSkipped: false,
+    aliases: ["https://pagecast.pages.dev"],
+    isLive: false
+  });
+
+  // Text-table fallback when --json is unsupported.
+  const fromTable = parseWranglerPagesDeployments(
+    [
+      "┌──────────────────────────────────────┬─────────────┬──────────────────────┐",
+      "│ Deployment ID                        │ Environment │ Created              │",
+      "├──────────────────────────────────────┼─────────────┼──────────────────────┤",
+      "│ 33333333-3333-3333-3333-333333333333 │ Production  │ 2026-06-18T10:00:00Z │",
+      "└──────────────────────────────────────┴─────────────┴──────────────────────┘"
+    ].join("\n")
+  );
+  assert.equal(fromTable.length, 1);
+  assert.equal(fromTable[0].id, "33333333-3333-3333-3333-333333333333");
+  // Capitalized "Production" from the text table is normalized to lowercase.
+  assert.equal(fromTable[0].environment, "production");
+  // shortId falls back to the first 8 chars of the id when none is provided.
+  assert.equal(fromTable[0].shortId, "33333333");
+});
+
+test("Wrangler Pages deployment list parsing handles wrangler's PascalCase CLI JSON", () => {
+  // The actual `wrangler pages deployment list --json` output uses column-named
+  // PascalCase keys with a relative "Status" string and no created_on/short_id.
+  const deployments = parseWranglerPagesDeployments(
+    JSON.stringify([
+      {
+        Id: "bc71ab77-7c33-4b16-92f8-9e9945cd425f",
+        Environment: "Production",
+        Branch: "main",
+        Source: "69997bf",
+        Deployment: "https://bc71ab77.pagecasthq.pages.dev",
+        Status: "2 days ago",
+        Build: "https://dash.cloudflare.com/acct/pages/view/pagecasthq/bc71ab77"
+      },
+      {
+        Id: "62338d1c-51eb-4eeb-a48e-83b1e468f9a5",
+        Environment: "Production",
+        Branch: "main",
+        Source: "fb0b51b",
+        Deployment: "https://62338d1c.pagecasthq.pages.dev",
+        Status: "1 week ago"
+      }
+    ])
+  );
+
+  assert.equal(deployments.length, 2);
+  assert.equal(deployments[0].id, "bc71ab77-7c33-4b16-92f8-9e9945cd425f");
+  assert.equal(deployments[0].shortId, "bc71ab77");
+  assert.equal(deployments[0].environment, "production");
+  assert.equal(deployments[0].url, "https://bc71ab77.pagecasthq.pages.dev");
+  assert.equal(deployments[0].status, "2 days ago");
+  assert.equal(deployments[0].branch, "main");
+
+  // The newest production deploy (insertion order, since no timestamps) is live.
+  const flagged = flagLiveDeployment(deployments, { baseUrl: "https://pagecasthq.pages.dev" });
+  assert.deepEqual(flagged.filter((d) => d.isLive).map((d) => d.id), [
+    "bc71ab77-7c33-4b16-92f8-9e9945cd425f"
+  ]);
+  // Older production deploys are prunable; the live one is never selected.
+  assert.deepEqual(selectDeploymentsToPrune(flagged, 1).map((d) => d.id), [
+    "62338d1c-51eb-4eeb-a48e-83b1e468f9a5"
+  ]);
+});
+
+test("flagLiveDeployment marks the newest production deploy and protects aliases", () => {
+  const flagged = flagLiveDeployment(
+    [
+      { id: "old-prod", environment: "production", createdOn: "2026-06-10T00:00:00Z", aliases: [], isSkipped: false },
+      { id: "preview", environment: "preview", createdOn: "2026-06-21T00:00:00Z", aliases: [], isSkipped: false },
+      { id: "new-prod", environment: "production", createdOn: "2026-06-20T00:00:00Z", aliases: [], isSkipped: false }
+    ],
+    { baseUrl: "https://pagecast.pages.dev" }
+  );
+
+  // Newest-first ordering and exactly one live (the newest production deploy),
+  // even though a preview is more recent.
+  assert.deepEqual(flagged.map((d) => d.id), ["preview", "new-prod", "old-prod"]);
+  assert.deepEqual(flagged.filter((d) => d.isLive).map((d) => d.id), ["new-prod"]);
+
+  // A production deploy aliased to the base URL is also protected.
+  const aliased = flagLiveDeployment(
+    [
+      { id: "newest", environment: "production", createdOn: "2026-06-22T00:00:00Z", aliases: [], isSkipped: false },
+      {
+        id: "aliased",
+        environment: "production",
+        createdOn: "2026-06-01T00:00:00Z",
+        aliases: ["https://pagecast.pages.dev"],
+        isSkipped: false
+      }
+    ],
+    { baseUrl: "https://pagecast.pages.dev" }
+  );
+  assert.deepEqual(aliased.filter((d) => d.isLive).map((d) => d.id).sort(), ["aliased", "newest"]);
+});
+
+test("selectDeploymentsToPrune keeps the newest N and never the live deploy", () => {
+  const flagged = flagLiveDeployment(
+    [
+      { id: "a", environment: "production", createdOn: "2026-06-05T00:00:00Z", aliases: [], isSkipped: false },
+      { id: "b", environment: "preview", createdOn: "2026-06-04T00:00:00Z", aliases: [], isSkipped: false },
+      { id: "c", environment: "preview", createdOn: "2026-06-03T00:00:00Z", aliases: [], isSkipped: false },
+      { id: "d", environment: "preview", createdOn: "2026-06-02T00:00:00Z", aliases: [], isSkipped: false }
+    ],
+    { baseUrl: "" }
+  );
+  // "a" is live (newest production). Keep 2 newest (a, b) → delete c, d oldest-first.
+  assert.deepEqual(selectDeploymentsToPrune(flagged, 2).map((d) => d.id), ["d", "c"]);
+  // keep >= count → nothing to delete.
+  assert.deepEqual(selectDeploymentsToPrune(flagged, 4), []);
+  // keep 0 → delete everything except the live deploy.
+  assert.deepEqual(selectDeploymentsToPrune(flagged, 0).map((d) => d.id).sort(), ["b", "c", "d"]);
+});
+
+test("Auth manager lists deployments via wrangler and passes account through env", async () => {
+  const accountId = "abcdef0123456789abcdef0123456789";
+  const { fakeSpawn, captured } = makeWranglerFake((args) => {
+    if (args.includes("deployment") && args.includes("list")) {
+      return {
+        code: 0,
+        output: JSON.stringify([
+          {
+            id: "dep-1",
+            short_id: "dep1",
+            url: "https://dep1.pagecast.pages.dev",
+            environment: "production",
+            created_on: "2026-06-20T10:00:00Z"
+          }
+        ])
+      };
+    }
+    return { code: 0, output: "" };
+  });
+
+  const auth = createCloudflareAuthManager({ spawnImpl: fakeSpawn, listTimeoutMs: 1000 });
+  const deployments = await auth.listDeployments({ projectName: "pagecasthq", accountId });
+
+  assert.equal(deployments.length, 1);
+  assert.equal(deployments[0].id, "dep-1");
+  const listCall = captured.find((item) => item.args.includes("deployment") && item.args.includes("list"));
+  assert.ok(listCall.args.includes("--project-name"));
+  assert.ok(listCall.args.includes("pagecasthq"));
+  // Account is passed via env, never as a CLI flag.
+  assert.equal(listCall.accountId, accountId);
+  assert.ok(!listCall.args.includes("--account-id"));
+});
+
+test("Auth manager deletes a deployment, adding --force only when requested", async () => {
+  const { fakeSpawn, captured } = makeWranglerFake(() => ({ code: 0, output: "" }));
+  const auth = createCloudflareAuthManager({ spawnImpl: fakeSpawn, listTimeoutMs: 1000 });
+
+  await auth.deleteDeployment({ id: "dep-9", projectName: "pagecasthq" });
+  const plain = captured.find((item) => item.args.includes("delete"));
+  assert.deepEqual(plain.args, [
+    "--yes",
+    "wrangler",
+    "pages",
+    "deployment",
+    "delete",
+    "dep-9",
+    "--project-name",
+    "pagecasthq"
+  ]);
+
+  await auth.deleteDeployment({ id: "dep-10", projectName: "pagecasthq", force: true });
+  const forced = captured.filter((item) => item.args.includes("delete")).pop();
+  assert.ok(forced.args.includes("--force"));
+});
+
+test("Auth manager retries delete with --force for aliased non-production deploys", async () => {
+  let deleteCalls = 0;
+  const { fakeSpawn, captured } = makeWranglerFake((args) => {
+    if (args.includes("delete")) {
+      deleteCalls += 1;
+      if (!args.includes("--force")) {
+        return { code: 1, output: "Deployment is aliased. Re-run with --force to delete it." };
+      }
+      return { code: 0, output: "" };
+    }
+    return { code: 0, output: "" };
+  });
+  const auth = createCloudflareAuthManager({ spawnImpl: fakeSpawn, listTimeoutMs: 1000 });
+
+  const result = await auth.deleteDeployment({
+    id: "dep-pre",
+    projectName: "pagecasthq",
+    environment: "preview"
+  });
+  assert.equal(result.deleted, true);
+  assert.equal(deleteCalls, 2);
+  assert.ok(captured.filter((item) => item.args.includes("delete")).pop().args.includes("--force"));
+});
+
+test("Deployments API lists, protects the live deploy, deletes, and prunes", async () => {
+  const tempDir = await makeTempDir();
+  const dataDir = path.join(tempDir, "data");
+  const accountId = "abcdef0123456789abcdef0123456789";
+
+  const { fakeSpawn, captured } = makeWranglerFake((args) => {
+    if (args.includes("whoami")) {
+      return { code: 0, output: JSON.stringify({ accounts: [{ name: "Personal", id: accountId }] }) };
+    }
+    if (args.includes("deployment") && args.includes("list")) {
+      return {
+        code: 0,
+        output: JSON.stringify([
+          {
+            id: "prod-live",
+            short_id: "prodlive",
+            url: "https://prodlive.pagecasthq.pages.dev",
+            environment: "production",
+            created_on: "2026-06-20T10:00:00Z"
+          },
+          {
+            id: "preview-old",
+            short_id: "prevold",
+            url: "https://prevold.pagecasthq.pages.dev",
+            environment: "preview",
+            created_on: "2026-06-19T10:00:00Z"
+          }
+        ])
+      };
+    }
+    return { code: 0, output: "" };
+  });
+
+  const runtime = await startServers({
+    adminPort: 0,
+    publicPort: 0,
+    dataDir,
+    staticDir: path.resolve("public"),
+    cloudflareAuthSpawnImpl: fakeSpawn,
+    cloudflareListTimeoutMs: 1000
+  });
+
+  try {
+    // Configure the target project so the deployment routes are active.
+    const configResponse = await fetch(`${runtime.adminUrl}/api/config/pages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectName: "pagecasthq", accountId })
+    });
+    assert.equal(configResponse.status, 200);
+
+    // List: newest production deploy is flagged live.
+    const listResponse = await fetch(`${runtime.adminUrl}/api/deployments`);
+    assert.equal(listResponse.status, 200);
+    const listData = await listResponse.json();
+    assert.equal(listData.configured, true);
+    assert.deepEqual(listData.deployments.map((d) => d.id), ["prod-live", "preview-old"]);
+    assert.equal(listData.deployments.find((d) => d.id === "prod-live").isLive, true);
+    assert.equal(listData.deployments.find((d) => d.id === "preview-old").isLive, false);
+
+    // Deleting the live deploy is refused with 409 and never spawns a delete.
+    const liveDelete = await fetch(`${runtime.adminUrl}/api/deployments/prod-live`, { method: "DELETE" });
+    assert.equal(liveDelete.status, 409);
+    assert.equal(captured.some((item) => item.args.includes("delete")), false);
+
+    // Deleting a non-live deploy succeeds and spawns the wrangler delete.
+    const okDelete = await fetch(`${runtime.adminUrl}/api/deployments/preview-old`, { method: "DELETE" });
+    assert.equal(okDelete.status, 200);
+    const deleteCall = captured.find((item) => item.args.includes("delete"));
+    assert.ok(deleteCall.args.includes("preview-old"));
+    assert.equal(deleteCall.accountId, accountId);
+
+    // Prune keep=1 keeps the live deploy and removes the older preview.
+    const pruneResponse = await fetch(`${runtime.adminUrl}/api/deployments/prune`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keep: 1 })
+    });
+    assert.equal(pruneResponse.status, 200);
+    const pruneData = await pruneResponse.json();
+    assert.equal(pruneData.pruned, 1);
+    assert.deepEqual(pruneData.deleted, ["preview-old"]);
+
+    // Bad keep is rejected.
+    const badPrune = await fetch(`${runtime.adminUrl}/api/deployments/prune`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keep: 0 })
+    });
+    assert.equal(badPrune.status, 400);
+  } finally {
+    await runtime.close();
+  }
 });
 
 test("Cloudflare credential status reports scoped token availability without exposing token", () => {

@@ -47,6 +47,45 @@ export interface Report {
   publications: Publication[];
 }
 
+// A Cloudflare Pages deployment snapshot (one immutable, whole-site deploy).
+// Mirrors the shape flagged by flagLiveDeployment in src/server.js.
+export interface Deployment {
+  id: string;
+  shortId: string;
+  url: string;
+  environment: string;
+  branch: string;
+  createdOn: string;
+  modifiedOn: string;
+  // Human-friendly age/stage (e.g. "2 days ago") for display when no ISO
+  // createdOn is available.
+  status: string;
+  latestStage: string;
+  isSkipped: boolean;
+  aliases: string[];
+  // The currently-live production deploy; protected from deletion.
+  isLive: boolean;
+}
+
+export interface DeploymentsResponse {
+  deployments: Deployment[];
+  projectName: string;
+  baseUrl: string;
+  configured: boolean;
+}
+
+export interface DeleteDeploymentResponse {
+  deleted: boolean;
+  id: string;
+}
+
+export interface PruneDeploymentsResponse {
+  pruned: number;
+  kept: number;
+  deleted: string[];
+  failed: { id: string; error: string }[];
+}
+
 export interface CloudflareAccount {
   id: string;
   name: string;

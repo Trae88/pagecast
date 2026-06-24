@@ -694,6 +694,161 @@ export function parseWranglerWhoamiAccounts(output) {
   return parseWranglerWhoamiTable(output);
 }
 
+// --- Cloudflare Pages deployment history: parse `wrangler pages deployment`
+// outputs and flag/select deployments for the view-and-remove feature. --------
+
+function parseWranglerPagesDeploymentTable(output) {
+  // Text fallback for Wrangler versions where `--json` is unsupported. The table
+  // can't carry aliases, so live-detection degrades to the env+date heuristic.
+  const text = stripAnsi(output);
+  const rows = text
+    .split(/\r?\n/)
+    .filter((line) => line.includes("│"))
+    .map((line) => line.split("│").slice(1, -1).map((column) => column.trim()))
+    .filter((columns) => columns.some(Boolean));
+
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const headerIndex = rows.findIndex((columns) =>
+    columns.some((column) => /deployment\s*id|^id$/i.test(column))
+  );
+  if (headerIndex === -1) {
+    return [];
+  }
+
+  const headers = rows[headerIndex].map((column) => column.toLowerCase());
+  const idIndex = headers.findIndex((header) => /deployment\s*id|^id$/.test(header));
+  const envIndex = headers.findIndex((header) => header.includes("environment"));
+  const branchIndex = headers.findIndex((header) => header.includes("branch"));
+  const createdIndex = headers.findIndex((header) => header.includes("created") || header.includes("date"));
+  const urlIndex = headers.findIndex((header) => header.includes("url") || header.includes("source"));
+
+  return rows.slice(headerIndex + 1)
+    .map((columns) => {
+      const id = idIndex >= 0 ? columns[idIndex] : "";
+      if (!id || /deployment\s*id|^id$/i.test(id)) {
+        return null;
+      }
+      return {
+        id,
+        deployment_id: id,
+        environment: envIndex >= 0 ? columns[envIndex] : "",
+        branch: branchIndex >= 0 ? columns[branchIndex] : "",
+        created_on: createdIndex >= 0 ? columns[createdIndex] : "",
+        url: urlIndex >= 0 ? columns[urlIndex] : ""
+      };
+    })
+    .filter(Boolean);
+}
+
+// Normalize `wrangler pages deployment list` output (JSON first, table fallback)
+// into a stable shape. Tolerant of field-name drift across Wrangler versions.
+export function parseWranglerPagesDeployments(output) {
+  let parsed;
+  try {
+    parsed = parseJsonFromCommandOutput(output);
+  } catch {
+    parsed = parseWranglerPagesDeploymentTable(output);
+  }
+
+  const list = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.result)
+      ? parsed.result
+      : Array.isArray(parsed?.deployments)
+        ? parsed.deployments
+        : [];
+
+  return list
+    .map((deployment) => {
+      // Wrangler's CLI `--json` emits PascalCase, column-named fields
+      // (Id/Environment/Deployment/Status), while the REST API and the text
+      // table use snake_case/lowercase. Read every known casing.
+      const id = firstString(deployment?.id, deployment?.Id, deployment?.deployment_id);
+      if (!id) {
+        return null;
+      }
+      const aliases = Array.isArray(deployment?.aliases)
+        ? deployment.aliases.filter((alias) => typeof alias === "string")
+        : [];
+      return {
+        id,
+        shortId: firstString(deployment?.short_id, deployment?.shortId) || id.slice(0, 8),
+        url: firstString(deployment?.url, deployment?.Deployment, deployment?.deployment_url),
+        // Normalize case: JSON returns "production"/"preview"; wrangler's CLI
+        // JSON and the text table yield "Production"/"Preview". Downstream live
+        // detection compares against "production", so lowercase it here.
+        environment: (
+          firstString(deployment?.environment, deployment?.Environment) || "preview"
+        ).toLowerCase(),
+        branch: firstString(
+          deployment?.deployment_trigger?.metadata?.branch,
+          deployment?.branch,
+          deployment?.Branch
+        ),
+        // ISO timestamp when present (REST shape). Wrangler's CLI JSON omits it
+        // and lists newest-first, so live-detection's stable sort preserves order.
+        createdOn: firstString(deployment?.created_on, deployment?.createdOn, deployment?.created_at),
+        modifiedOn: firstString(deployment?.modified_on, deployment?.modifiedOn, deployment?.modified_at),
+        // A human-friendly age/stage for display when no ISO timestamp exists
+        // (wrangler's CLI JSON puts e.g. "2 days ago" in Status).
+        status: firstString(
+          deployment?.Status,
+          deployment?.latest_stage?.name,
+          deployment?.latest_stage,
+          deployment?.status
+        ),
+        latestStage: firstString(deployment?.latest_stage?.name, deployment?.latest_stage),
+        isSkipped: deployment?.is_skipped === true,
+        aliases,
+        isLive: false
+      };
+    })
+    .filter(Boolean);
+}
+
+function deploymentTimestamp(deployment) {
+  const parsed = Date.parse(deployment?.modifiedOn || deployment?.createdOn || "");
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+// Flag the single live production deployment so callers can protect it from
+// deletion. Live = the newest non-skipped production deployment, OR (when JSON
+// aliases are present) any production deployment aliased to the project base URL.
+// Returns a NEW list sorted newest-first with `isLive` set.
+export function flagLiveDeployment(deployments, { baseUrl = "" } = {}) {
+  const host = String(baseUrl || "")
+    .replace(/^https?:\/\//, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+  const sorted = [...deployments].sort((a, b) => deploymentTimestamp(b) - deploymentTimestamp(a));
+  const production = sorted.filter((d) => d.environment === "production" && !d.isSkipped);
+  const liveId = production.length > 0 ? production[0].id : "";
+  return sorted.map((deployment) => {
+    const aliasMatch =
+      host &&
+      deployment.environment === "production" &&
+      deployment.aliases.some(
+        (alias) =>
+          alias.replace(/^https?:\/\//, "").replace(/\/+$/, "").toLowerCase() === host
+      );
+    return { ...deployment, isLive: deployment.id === liveId || Boolean(aliasMatch) };
+  });
+}
+
+// Pick which deployments a `keep N` prune should delete: keep the N newest
+// (including the live one), delete the rest oldest-first, NEVER the live one.
+export function selectDeploymentsToPrune(deployments, keep) {
+  const keepCount = Math.max(0, Number.isFinite(keep) ? Math.floor(keep) : 0);
+  const sorted = [...deployments].sort((a, b) => deploymentTimestamp(b) - deploymentTimestamp(a));
+  return sorted
+    .slice(keepCount)
+    .filter((deployment) => !deployment.isLive)
+    .reverse();
+}
+
 async function copyPublicTree(sourceRoot, destinationRoot) {
   await fs.rm(destinationRoot, { recursive: true, force: true });
   await fs.mkdir(destinationRoot, { recursive: true });
@@ -1737,6 +1892,68 @@ export function createCloudflareAuthManager({
     return listProjects(options);
   }
 
+  // List a Pages project's deployment snapshots (the immutable per-deploy
+  // <hash>.pages.dev versions). JSON-first with a plain-text fallback, mirroring
+  // listProjects(): some Wrangler versions exit 1 on `--json`. Returns the
+  // normalized (unflagged) list; callers flag the live one via flagLiveDeployment
+  // since the project base URL lives in config, not here.
+  async function listDeployments({ projectName, accountId = "" } = {}) {
+    const name = normalizePagesProjectName(projectName);
+    const env = accountId ? { CLOUDFLARE_ACCOUNT_ID: accountId } : {};
+    try {
+      const output = await runWrangler(
+        ["pages", "deployment", "list", "--project-name", name, "--json"],
+        listTimeoutMs,
+        env
+      );
+      const deployments = parseWranglerPagesDeployments(output);
+      if (deployments.length > 0) {
+        return deployments;
+      }
+    } catch {
+      // fall through to the text listing
+    }
+    const output = await runWrangler(
+      ["pages", "deployment", "list", "--project-name", name],
+      listTimeoutMs,
+      env
+    );
+    return parseWranglerPagesDeployments(output);
+  }
+
+  // Delete one deployment snapshot by id. `force` adds --force, required for
+  // aliased non-production deployments. Cloudflare refuses the live/latest
+  // production deploy regardless — callers should pre-check isLive. On a
+  // non-force failure that asks for --force, retry once for non-production
+  // deploys only (never force the live production one).
+  async function deleteDeployment({ id, projectName, accountId = "", force = false, environment = "" } = {}) {
+    const name = normalizePagesProjectName(projectName);
+    const deployId = String(id || "").trim();
+    if (!deployId) {
+      throw appError("A deployment id is required.", 400);
+    }
+    const env = accountId ? { CLOUDFLARE_ACCOUNT_ID: accountId } : {};
+    const runDelete = async (useForce) => {
+      const args = ["pages", "deployment", "delete", deployId, "--project-name", name];
+      if (useForce) {
+        args.push("--force");
+      }
+      await runWrangler(args, listTimeoutMs, env);
+    };
+    try {
+      await runDelete(force);
+    } catch (error) {
+      const message = stripAnsi(error.message || "");
+      const needsForce = /--force|aliased|alias/i.test(message);
+      if (needsForce && !force && environment && environment !== "production") {
+        await runDelete(true);
+      } else {
+        throw error;
+      }
+    }
+    return { id: deployId, deleted: true };
+  }
+
   // Returns the Cloudflare accounts visible to the current OAuth session.
   // An empty array means "not logged in". Used to auto-detect the account so
   // the user never has to paste an account ID for the single-account case.
@@ -1911,6 +2128,8 @@ export function createCloudflareAuthManager({
     logout,
     listProjects,
     loginAndListProjects,
+    listDeployments,
+    deleteDeployment,
     whoami,
     ensureProject,
     setupFeedback,
@@ -4047,6 +4266,112 @@ async function handleApi(
     return;
   }
 
+  // List the Cloudflare Pages deployment snapshots for the configured project.
+  // Each is a whole-site immutable deploy; the live one is flagged so the client
+  // can protect it from deletion.
+  if (url.pathname === "/api/deployments" && req.method === "GET") {
+    const pages = configStore.get().pages;
+    if (!pages.projectName) {
+      sendJson(res, 200, { deployments: [], projectName: "", baseUrl: "", configured: false });
+      return;
+    }
+    const credential = cloudflareCredentialStatus();
+    if (!credential.tokenConfigured) {
+      const session = cloudflareAuth.isSessionInitialized()
+        ? cloudflareAuth.cachedSession()
+        : await cloudflareAuth.refreshSession();
+      if (!session.loggedIn) {
+        throw appError(cloudflareAuthRequiredMessage(), 401);
+      }
+    }
+    const deployments = await deployQueue.enqueue(() =>
+      cloudflareAuth.listDeployments({ projectName: pages.projectName, accountId: pages.accountId })
+    );
+    sendJson(res, 200, {
+      deployments: flagLiveDeployment(deployments, { baseUrl: pages.baseUrl }),
+      projectName: pages.projectName,
+      baseUrl: pages.baseUrl,
+      configured: true
+    });
+    return;
+  }
+
+  // Delete one deployment snapshot. Refuses the live deployment up front (409)
+  // so the user never hits Cloudflare's guaranteed rejection.
+  const deploymentMatch = /^\/api\/deployments\/([^/]+)$/.exec(url.pathname);
+  if (deploymentMatch && req.method === "DELETE") {
+    const id = decodeURIComponent(deploymentMatch[1]);
+    const force = url.searchParams.get("force") === "1" || url.searchParams.get("force") === "true";
+    const pages = configStore.get().pages;
+    if (!pages.projectName) {
+      throw appError("No Cloudflare Pages project is configured.", 400);
+    }
+    await deployQueue.enqueue(async () => {
+      const current = flagLiveDeployment(
+        await cloudflareAuth.listDeployments({ projectName: pages.projectName, accountId: pages.accountId }),
+        { baseUrl: pages.baseUrl }
+      );
+      const target = current.find((deployment) => deployment.id === id);
+      if (target?.isLive) {
+        throw appError("This is the live deployment and can't be deleted. Publish a newer one first.", 409);
+      }
+      await cloudflareAuth.deleteDeployment({
+        id,
+        projectName: pages.projectName,
+        accountId: pages.accountId,
+        force,
+        environment: target?.environment || ""
+      });
+    });
+    sendJson(res, 200, { deleted: true, id });
+    return;
+  }
+
+  // Prune old snapshots: keep the N newest (incl. live), delete the rest
+  // oldest-first, serially. Reports partial success rather than failing the batch.
+  if (url.pathname === "/api/deployments/prune" && req.method === "POST") {
+    const body = await readJsonBody(req);
+    const keep = Number(body.keep);
+    if (!Number.isInteger(keep) || keep < 1) {
+      throw appError("`keep` must be an integer of at least 1.", 400);
+    }
+    const pages = configStore.get().pages;
+    if (!pages.projectName) {
+      throw appError("No Cloudflare Pages project is configured.", 400);
+    }
+    const summary = await deployQueue.enqueue(async () => {
+      const flagged = flagLiveDeployment(
+        await cloudflareAuth.listDeployments({ projectName: pages.projectName, accountId: pages.accountId }),
+        { baseUrl: pages.baseUrl }
+      );
+      const toDelete = selectDeploymentsToPrune(flagged, keep);
+      const deleted = [];
+      const failed = [];
+      for (const deployment of toDelete) {
+        try {
+          await cloudflareAuth.deleteDeployment({
+            id: deployment.id,
+            projectName: pages.projectName,
+            accountId: pages.accountId,
+            force: deployment.environment !== "production",
+            environment: deployment.environment
+          });
+          deleted.push(deployment.id);
+        } catch (error) {
+          failed.push({ id: deployment.id, error: error.message });
+        }
+      }
+      return { deleted, failed };
+    });
+    sendJson(res, 200, {
+      pruned: summary.deleted.length,
+      kept: keep,
+      deleted: summary.deleted,
+      failed: summary.failed
+    });
+    return;
+  }
+
   if (url.pathname === "/api/reports" && req.method === "GET") {
     sendJson(res, 200, { reports: store.list(options) });
     return;
@@ -4948,6 +5273,151 @@ export async function listCloudflarePagesProjects({
     accountId: selectedAccountId,
     selectedProject: chooseWranglerPagesProject(projects, configStore.get().pages)
   };
+}
+
+// Resolve a headless Cloudflare context for deployment-history commands: the
+// configured project + a usable account id, with the same auth/account guards
+// as listCloudflarePagesProjects (401 when signed out, 409 when ambiguous).
+async function resolveHeadlessDeploymentContext({
+  accountId,
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS
+} = {}) {
+  const { configStore, cloudflareAuth } = await createHeadlessCloudflareContext({
+    dataDir,
+    cloudflareAuthSpawnImpl,
+    cloudflareListTimeoutMs
+  });
+  const current = await applyPagesSelection({ configStore, accountId });
+  const pages = current.pages;
+  if (!pages.projectName) {
+    throw appError("No Cloudflare Pages project configured. Run `npx pagecast pages setup` first.", 400);
+  }
+  const credential = cloudflareCredentialStatus();
+  const envAccountId = normalizeAccountIdSafe(process.env.CLOUDFLARE_ACCOUNT_ID);
+  let selectedAccountId = normalizeAccountIdSafe(accountId || envAccountId || pages.accountId);
+
+  if (!credential.tokenConfigured) {
+    const session = await cloudflareAuth.refreshSession();
+    if (!session.loggedIn) {
+      throw appError(cloudflareAuthRequiredMessage(), 401);
+    }
+    if (!selectedAccountId && session.accounts.length === 1) {
+      selectedAccountId = session.accounts[0].id;
+    }
+    if (!selectedAccountId && session.accounts.length > 1) {
+      throw appError("Multiple Cloudflare accounts found. Re-run with `--account <account-id>`.", 409);
+    }
+  }
+  if (credential.tokenConfigured && !selectedAccountId) {
+    throw appError("Cloudflare API token mode requires CLOUDFLARE_ACCOUNT_ID or --account.", 401);
+  }
+
+  return { cloudflareAuth, pages, accountId: selectedAccountId };
+}
+
+export async function listCloudflarePagesDeployments({
+  accountId,
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS
+} = {}) {
+  const ctx = await resolveHeadlessDeploymentContext({
+    accountId,
+    dataDir,
+    cloudflareAuthSpawnImpl,
+    cloudflareListTimeoutMs
+  });
+  const deployments = await ctx.cloudflareAuth.listDeployments({
+    projectName: ctx.pages.projectName,
+    accountId: ctx.accountId
+  });
+  return {
+    deployments: flagLiveDeployment(deployments, { baseUrl: ctx.pages.baseUrl }),
+    projectName: ctx.pages.projectName,
+    baseUrl: ctx.pages.baseUrl
+  };
+}
+
+export async function deleteCloudflarePagesDeployment({
+  id,
+  force = false,
+  accountId,
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS
+} = {}) {
+  const deployId = String(id || "").trim();
+  if (!deployId) {
+    throw appError("A deployment id is required.", 400);
+  }
+  const ctx = await resolveHeadlessDeploymentContext({
+    accountId,
+    dataDir,
+    cloudflareAuthSpawnImpl,
+    cloudflareListTimeoutMs
+  });
+  const current = flagLiveDeployment(
+    await ctx.cloudflareAuth.listDeployments({ projectName: ctx.pages.projectName, accountId: ctx.accountId }),
+    { baseUrl: ctx.pages.baseUrl }
+  );
+  const target = current.find((deployment) => deployment.id === deployId);
+  if (!target) {
+    throw appError(`Deployment ${deployId} was not found for ${ctx.pages.projectName}.`, 404);
+  }
+  if (target.isLive) {
+    throw appError("This is the live deployment and can't be deleted. Publish a newer one first.", 409);
+  }
+  await ctx.cloudflareAuth.deleteDeployment({
+    id: deployId,
+    projectName: ctx.pages.projectName,
+    accountId: ctx.accountId,
+    force,
+    environment: target.environment
+  });
+  return { id: deployId, deleted: true };
+}
+
+export async function pruneCloudflarePagesDeployments({
+  keep,
+  accountId,
+  dataDir = path.join(PROJECT_ROOT, ".pagecast"),
+  cloudflareAuthSpawnImpl = spawn,
+  cloudflareListTimeoutMs = DEFAULT_CLOUDFLARE_LIST_TIMEOUT_MS
+} = {}) {
+  const keepCount = Number(keep);
+  if (!Number.isInteger(keepCount) || keepCount < 1) {
+    throw appError("`keep` must be an integer of at least 1.", 400);
+  }
+  const ctx = await resolveHeadlessDeploymentContext({
+    accountId,
+    dataDir,
+    cloudflareAuthSpawnImpl,
+    cloudflareListTimeoutMs
+  });
+  const flagged = flagLiveDeployment(
+    await ctx.cloudflareAuth.listDeployments({ projectName: ctx.pages.projectName, accountId: ctx.accountId }),
+    { baseUrl: ctx.pages.baseUrl }
+  );
+  const toDelete = selectDeploymentsToPrune(flagged, keepCount);
+  const deleted = [];
+  const failed = [];
+  for (const deployment of toDelete) {
+    try {
+      await ctx.cloudflareAuth.deleteDeployment({
+        id: deployment.id,
+        projectName: ctx.pages.projectName,
+        accountId: ctx.accountId,
+        force: deployment.environment !== "production",
+        environment: deployment.environment
+      });
+      deleted.push(deployment.id);
+    } catch (error) {
+      failed.push({ id: deployment.id, error: error.message });
+    }
+  }
+  return { pruned: deleted.length, kept: keepCount, deleted, failed };
 }
 
 export async function deployCloudflarePagesSite({
