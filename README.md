@@ -41,6 +41,8 @@ In the admin UI, click **Connect Cloudflare**. Pagecast uses scoped Wrangler
 OAuth (`account:read`, `user:read`, `pages:write`), detects your account, and
 creates the Pages project if needed. From a clone, run `npm start`.
 
+Prefer containers? Pagecast ships with Docker support — see [Run with Docker](#run-with-docker).
+
 Prefer the terminal?
 
 ```sh
