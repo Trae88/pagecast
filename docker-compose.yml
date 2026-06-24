@@ -1,0 +1,27 @@
+# Run the pagecast admin dashboard + local page server in a container.
+#
+#   docker compose up --build      # then open http://localhost:4173
+#
+# Publishing to Cloudflare from inside the container uses an API token: the
+# dashboard's interactive "Connect Cloudflare" OAuth flow needs a browser the
+# container does not have. Copy .env.example to .env and fill in the token to
+# enable publishing / deploys.
+services:
+  pagecast:
+    build: .
+    image: pagecast:local
+    # Persist config + published history across container restarts.
+    volumes:
+      - ./.pagecast:/app/.pagecast
+    # Map ONLY to the host loopback: the admin API is unauthenticated and can run
+    # shell commands, so it must never be published on a routable interface.
+    ports:
+      - "127.0.0.1:4173:4173"  # admin dashboard
+      - "127.0.0.1:4174:4174"  # local published-page server
+    environment:
+      HOST: "0.0.0.0"
+      # Optional — enables Cloudflare publishing from the container (see .env).
+      CLOUDFLARE_API_TOKEN: "${CLOUDFLARE_API_TOKEN:-}"
+      CLOUDFLARE_ACCOUNT_ID: "${CLOUDFLARE_ACCOUNT_ID:-}"
+    # `serve` is the image default; stated here for clarity.
+    command: ["serve"]

@@ -2775,6 +2775,46 @@ test("admin server rejects requests with a non-loopback Host header (DNS rebindi
   }
 });
 
+test("a wildcard bind host (0.0.0.0, e.g. in Docker) yields loopback URLs and does not trust Host: 0.0.0.0", async () => {
+  const { request } = await import("node:http");
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "pagecast-wildcard-"));
+  const runtime = await startServers({
+    host: "0.0.0.0",
+    adminPort: 0,
+    publicPort: 0,
+    dataDir,
+    staticDir: path.resolve("public")
+  });
+
+  const callWithHost = (hostHeader) =>
+    new Promise((resolve, reject) => {
+      const port = runtime.adminServer.address().port;
+      const req = request(
+        { host: "127.0.0.1", port, path: "/api/status", method: "GET", headers: { Host: hostHeader } },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode);
+        }
+      );
+      req.on("error", reject);
+      req.end();
+    });
+
+  try {
+    // Client-facing URLs must use a loopback host, never the wildcard bind
+    // address (browsers, incl. Chrome 128+, refuse to connect to 0.0.0.0).
+    assert.match(runtime.adminUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+    assert.match(runtime.publicUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+    // The wildcard bind must NOT make `Host: 0.0.0.0` a trusted loopback host.
+    assert.equal(await callWithHost("0.0.0.0"), 403);
+    // Real loopback Hosts still pass.
+    assert.notEqual(await callWithHost("127.0.0.1"), 403);
+  } finally {
+    await runtime.close();
+    await fs.rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("injectFeedbackWidget adds the widget script before </body> exactly once", () => {
   const html = "<!doctype html><html><head></head><body><h1>Report</h1></body></html>";
   const out = injectFeedbackWidget(html, { url: "https://fb.example.workers.dev", slug: "q3" });

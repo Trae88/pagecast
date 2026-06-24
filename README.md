@@ -41,6 +41,8 @@ In the admin UI, click **Connect Cloudflare**. Pagecast uses scoped Wrangler
 OAuth (`account:read`, `user:read`, `pages:write`), detects your account, and
 creates the Pages project if needed. From a clone, run `npm start`.
 
+Prefer containers? Pagecast ships with Docker support — see [Run with Docker](#run-with-docker).
+
 Prefer the terminal?
 
 ```sh
@@ -119,6 +121,52 @@ cp plugin/skills/publish-report/SKILL.md /path/to/your-agent/skills/publish-repo
 ```
 
 More detail in [plugin/README.md](plugin/README.md).
+
+## Run with Docker
+
+A single image bundles the whole `pagecast` CLI, so it serves the admin dashboard
+**and** runs every publish/deploy command — they are the same program.
+
+```sh
+# Serve the dashboard (build on first run, then open http://localhost:4173)
+docker compose up --build
+```
+
+The local published-page preview is on `http://localhost:4174`, and your config +
+publish history persist in `./.pagecast` (mounted as a volume).
+
+**Publishing from a container uses an API token, not the dashboard's "Connect
+Cloudflare" button** — that button opens a browser OAuth flow a container can't
+complete. Copy `.env.example` to `.env`, add a scoped token, and `docker compose`
+picks it up:
+
+```sh
+cp .env.example .env   # fill in CLOUDFLARE_API_TOKEN (+ CLOUDFLARE_ACCOUNT_ID)
+```
+
+Run any command headlessly (CI, servers) from the same image — mount your working
+directory and pass the token through:
+
+```sh
+docker build -t pagecast .
+docker run --rm -v "$PWD:/work" -w /work \
+  -e CLOUDFLARE_API_TOKEN -e CLOUDFLARE_ACCOUNT_ID \
+  pagecast publish ./report.html --json
+```
+
+Notes:
+
+- The admin API is unauthenticated and can run shell commands, so the container
+  binds `0.0.0.0` internally but the compose file maps the ports to the host's
+  **loopback only** (`127.0.0.1`). If you start `serve` with `docker run` instead
+  of compose, publish to loopback too — `-p 127.0.0.1:4173:4173`, never a bare
+  `-p 4173:4173`. Set `HOST` only to `127.0.0.1` or `0.0.0.0`, never a routable IP.
+- On Linux the container runs as uid 1000 (`node`); if a bind-mounted `./.pagecast`
+  isn't writable by that uid you'll get permission errors. `mkdir -p .pagecast`
+  before `compose up` (or `chown 1000:1000 .pagecast`) fixes it. Docker Desktop and
+  OrbStack handle this automatically.
+- `wrangler` is pinned and baked into the image, so deploys don't fetch it at
+  runtime. Bump `WRANGLER_VERSION` in the `Dockerfile` to update it.
 
 ## Chrome Extension (Experimental)
 
