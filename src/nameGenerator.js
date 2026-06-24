@@ -229,6 +229,9 @@ const TEMPLATES = [
 // Generate one memorable name. Pass { template } to force a specific shape (0-4)
 // and { rng } (e.g. makeRng(seed)) for deterministic output in tests.
 export function generateName({ rng = cryptoRng, template } = {}) {
+  if (template !== undefined && typeof TEMPLATES[template] !== "function") {
+    throw new RangeError(`Invalid name template index: ${template}`);
+  }
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const build = template === undefined ? pick(TEMPLATES, rng) : TEMPLATES[template];
     const name = build(rng).join("-");
@@ -252,9 +255,14 @@ export function generateUniqueName(isTaken = () => false, { rng = cryptoRng, gen
     if (!isTaken(name)) return name;
   }
   let name = gen();
-  for (let guard = 0; guard < 100 && isTaken(name); guard += 1) {
+  for (let guard = 0; guard < 100; guard += 1) {
+    if (!isTaken(name)) return name;
     const candidate = `${name}-${pick(NOUNS, rng)}`;
     name = candidate.length <= MAX_LENGTH ? candidate : gen();
   }
-  return name;
+  if (!isTaken(name)) return name;
+  // Never hand back a colliding slug — that would break the token-identity
+  // contract (findPublication / revoke / sync). Exhausting the (huge) namespace
+  // is a real, surfaceable error rather than a silent duplicate.
+  throw new Error("generateUniqueName: unable to find a unique name after retries");
 }

@@ -101,3 +101,14 @@ test("generateUniqueName escalates with extra words when names keep colliding", 
     assert.match(part, /^[a-z]+$/, `escalated part "${part}" is not a word`);
   }
 });
+
+test("generateName throws on an out-of-range template index", () => {
+  assert.throws(() => generateName({ template: 99 }), RangeError);
+  assert.throws(() => generateName({ template: -1 }), RangeError);
+});
+
+test("generateUniqueName throws rather than return a taken slug when exhausted", () => {
+  // If literally every candidate collides, returning one would break the
+  // token-identity contract — so it must throw instead.
+  assert.throws(() => generateUniqueName(() => true), /unique name/);
+});
