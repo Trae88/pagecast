@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { markdownToHtml } from "./markdown.js";
-import { generateUniqueName } from "./nameGenerator.js";
+import { generateName, generateUniqueName, generateUnguessableName } from "./nameGenerator.js";
 import {
   isValidPasswordHash,
   makePasswordHash,
@@ -181,8 +181,12 @@ export function publicTokenNamePrefix(token) {
 // library plus a per-publish collision check (isNameTaken); see nameGenerator.js.
 // NOTE: without the old entropy tail the slug is guessable, so it is no longer an
 // access-control boundary — sensitive pages must use password protection.
-export function createPublicToken(isNameTaken = () => false) {
-  return generateUniqueName(isNameTaken);
+export function createPublicToken(isNameTaken = () => false, { drop = false } = {}) {
+  // A "drop" is a deliberately public link: short and memorable, but guessable.
+  // Otherwise the link is private and gets a long, hard-to-guess all-words name
+  // (still no digits). Password protection remains the boundary for true secrecy.
+  const generate = drop ? () => generateName() : () => generateUnguessableName();
+  return generateUniqueName(isNameTaken, { generate });
 }
 
 function isPathInside(rootDir, targetPath) {
@@ -2171,6 +2175,9 @@ export function createReportStore({
       ...publication,
       kind,
       slug,
+      // Whether this link was published as a public "drop" (short, guessable
+      // slug). Legacy publications default to false (treated as private).
+      drop: publication.drop === true,
       publicUrl: kind === "snapshot" ? publication.publicUrl || null : null,
       revokedAt: publication.revokedAt || null,
       updatedAt: publication.updatedAt || publication.createdAt
@@ -2322,6 +2329,8 @@ export function createReportStore({
       slug,
       label: publication.label,
       kind,
+      // Public "drop" (short, guessable slug) vs a private hard-to-guess link.
+      drop: publication.drop === true,
       active,
       createdAt: publication.createdAt,
       updatedAt: publication.updatedAt || publication.createdAt,
@@ -2649,17 +2658,19 @@ export function createReportStore({
     return `v${(report.publications || []).length + 1}`;
   }
 
-  function draftPublication(id, { label, kind = "snapshot", publicUrl = null, expiresAt = null } = {}) {
+  function draftPublication(id, { label, kind = "snapshot", publicUrl = null, expiresAt = null, drop = false } = {}) {
     const report = reports.get(id);
     if (!report) {
       throw appError("Report was not found.", 404);
     }
 
+    const isDrop = drop === true;
     const createdAt = nowIso();
     const cleanLabel = slugifyReportName(label || nextPublicationLabel(report));
     // The slug now carries no random tail, so it must be unique on its own.
     // Collect every existing slug (and any legacy name prefix) and re-roll the
-    // generated name until it does not collide.
+    // generated name until it does not collide. A drop gets a short, shareable
+    // (guessable) name; otherwise a long, hard-to-guess private name.
     const takenNames = new Set();
     for (const existing of reports.values()) {
       for (const publication of existing.publications || []) {
@@ -2668,12 +2679,15 @@ export function createReportStore({
         takenNames.add(publicTokenNamePrefix(slug));
       }
     }
-    const token = createPublicToken((name) => takenNames.has(name));
+    const token = createPublicToken((name) => takenNames.has(name), { drop: isDrop });
     const publication = {
       token,
       slug: token,
       label: cleanLabel,
       kind,
+      // Whether this is a public "drop" (short, guessable slug) vs a private,
+      // hard-to-guess link.
+      drop: isDrop,
       publicUrl: kind === "snapshot" ? publicUrl : null,
       createdAt,
       updatedAt: createdAt,
@@ -2697,8 +2711,8 @@ export function createReportStore({
     return { report, publication };
   }
 
-  async function publish(id, { label } = {}) {
-    const { publication } = draftPublication(id, { label, kind: "snapshot" });
+  async function publish(id, { label, drop = false } = {}) {
+    const { publication } = draftPublication(id, { label, kind: "snapshot", drop });
     return commitPublication(id, publication);
   }
 
@@ -4464,7 +4478,7 @@ async function handleApi(
       await store.buildReport(id);
     }
     const expiresAt = resolveExpiresAt({ expires: body.expires, defaultExpiry: configStore.get().defaultExpiry });
-    const draft = store.draftPublication(id, { label: body.label, kind: "snapshot", expiresAt });
+    const draft = store.draftPublication(id, { label: body.label, kind: "snapshot", expiresAt, drop: body.drop === true });
     // An expiring or password-protected snapshot needs an edge gate built from
     // COMMITTED snapshots, so commit before the first deploy (else it ships
     // ungated until a later redeploy). Deploy in place (syncPublication) and

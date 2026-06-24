@@ -179,6 +179,13 @@ export const SURNAMES = clean([
   "armstrong", "gagarin", "ride", "jemison", "tereshkova", "aldrin"
 ]);
 
+// Short joining words used only to make long "unguessable" private names read
+// like a phrase ("hollow-paperclip-beneath-quiet-static") instead of a word pile.
+export const CONNECTORS = clean([
+  "of", "in", "by", "near", "beneath", "beyond", "amid", "under", "into",
+  "through", "across", "beside", "atop", "within", "toward", "above", "below"
+]);
+
 const RESERVED = new Set(["p", "index", "404", ""]);
 const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const MAX_LENGTH = 63;
@@ -257,4 +264,30 @@ export function generateUniqueName(isTaken = () => false, { rng = cryptoRng, gen
     name = candidate.length <= MAX_LENGTH ? candidate : gen();
   }
   return name;
+}
+
+// Generate a long, hard-to-guess private name with NO digits. Strings together
+// adjective-noun + connector + adjective-noun (+ sometimes one more noun) for
+// ~5-6 segments, e.g. "hollow-paperclip-beneath-quiet-static". That is tens of
+// trillions of combinations (~45-54 bits) — enough that a public URL cannot be
+// casually stumbled onto. For true secrecy, layer password protection on top;
+// this only raises the cost of guessing.
+export function generateUnguessableName({ rng = cryptoRng } = {}) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const parts = [
+      pick(ADJECTIVES, rng),
+      pick(NOUNS, rng),
+      pick(CONNECTORS, rng),
+      pick(ADJECTIVES, rng),
+      pick(NOUNS, rng)
+    ];
+    if (rng() < 0.5) parts.push(pick(NOUNS, rng));
+    const name = parts.join("-");
+    if (name.length <= MAX_LENGTH && !RESERVED.has(name) && DNS_LABEL.test(name)) {
+      return name;
+    }
+  }
+  // Always-valid fallback: four short-ish words can never exceed the cap or
+  // collide with a reserved single-segment slug.
+  return [pick(ADJECTIVES, rng), pick(NOUNS, rng), pick(ADJECTIVES, rng), pick(NOUNS, rng)].join("-");
 }

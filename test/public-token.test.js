@@ -45,3 +45,19 @@ test("a fresh token round-trips through publicTokenNamePrefix unchanged", () => 
   const token = createPublicToken();
   assert.equal(publicTokenNamePrefix(token), token, "tail-free token should be its own name");
 });
+
+test("a drop gets a short shareable name; default gets a long private name", () => {
+  for (let i = 0; i < 200; i += 1) {
+    const dropParts = createPublicToken(() => false, { drop: true }).split("-");
+    assert.ok(dropParts.length <= 3, `drop name should be short, got ${dropParts.length} words`);
+
+    const privateParts = createPublicToken(() => false, { drop: false }).split("-");
+    assert.ok(privateParts.length >= 5, `private name should be long, got ${privateParts.length} words`);
+  }
+});
+
+test("private (non-drop) is the default when no option is passed", () => {
+  // No opts → private/long, so links are not guessable unless explicitly a drop.
+  const parts = createPublicToken().split("-");
+  assert.ok(parts.length >= 5, `default should be the long private name, got "${parts.join("-")}"`);
+});

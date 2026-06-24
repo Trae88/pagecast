@@ -118,10 +118,10 @@ export const api = {
       method: "DELETE"
     }),
 
-  publishSnapshot: (id: string, label?: string) =>
+  publishSnapshot: (id: string, options?: { label?: string; drop?: boolean }) =>
     request<PublishResponse>(
       `/api/reports/${encodeURIComponent(id)}/publish-snapshot`,
-      { json: { label } }
+      { json: { label: options?.label, drop: options?.drop } }
     ),
 
   revokeAll: (id: string) =>

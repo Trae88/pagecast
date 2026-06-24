@@ -6,8 +6,10 @@ import {
   ADJECTIVES,
   NOUNS,
   SURNAMES,
+  CONNECTORS,
   generateName,
   generateUniqueName,
+  generateUnguessableName,
   makeRng
 } from "../src/nameGenerator.js";
 
@@ -100,4 +102,41 @@ test("generateUniqueName escalates with extra words when names keep colliding", 
   for (const part of parts) {
     assert.match(part, /^[a-z]+$/, `escalated part "${part}" is not a word`);
   }
+});
+
+test("generateUnguessableName is a long, all-words, digit-free private name", () => {
+  for (let i = 0; i < 3000; i += 1) {
+    const name = generateUnguessableName();
+    assert.match(name, DNS_LABEL, `"${name}" is not a valid DNS label`);
+    assert.ok(name.length <= 63, `"${name}" exceeds 63 chars`);
+    assert.doesNotMatch(name, /[0-9]/, `"${name}" contains a digit`);
+    const parts = name.split("-");
+    assert.ok(parts.length >= 5, `"${name}" should have >= 5 words for unguessability`);
+    for (const part of parts) {
+      assert.match(part, /^[a-z]+$/, `part "${part}" is not pure lowercase letters`);
+    }
+  }
+});
+
+test("unguessable names are vastly more varied than short ones", () => {
+  // ~45+ bits of entropy: 4000 draws should be essentially all unique.
+  const seen = new Set();
+  for (let i = 0; i < 4000; i += 1) {
+    seen.add(generateUnguessableName());
+  }
+  assert.equal(seen.size, 4000, `expected 4000 unique names, got ${seen.size}`);
+});
+
+test("CONNECTORS are exported, clean, and used in unguessable names", () => {
+  assert.ok(CONNECTORS.length >= 10, `only ${CONNECTORS.length} connectors`);
+  for (const c of CONNECTORS) {
+    assert.match(c, /^[a-z]+$/, `connector "${c}" is not pure lowercase`);
+  }
+  // A connector should appear somewhere in a batch of unguessable names.
+  const connectorSet = new Set(CONNECTORS);
+  let sawConnector = false;
+  for (let i = 0; i < 50 && !sawConnector; i += 1) {
+    sawConnector = generateUnguessableName().split("-").some((w) => connectorSet.has(w));
+  }
+  assert.ok(sawConnector, "expected a connector word in unguessable names");
 });
