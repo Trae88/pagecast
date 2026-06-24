@@ -57,7 +57,8 @@ export PAGECAST_TELEMETRY=0       # environment override
 export DO_NOT_TRACK=1             # cross-tool standard, also honored
 ```
 
-Telemetry is automatically disabled in CI environments.
+Telemetry is automatically disabled in CI environments, unless explicitly
+re-enabled with `PAGECAST_TELEMETRY=1`.
 
 ## Questions
 

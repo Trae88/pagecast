@@ -151,13 +151,15 @@ export function createReporter({
       timer.unref();
     }
     try {
-      await fetchImpl(resolvedEndpoint, {
+      const response = await fetchImpl(resolvedEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
         signal: controller.signal
       });
-      return true;
+      // A resolved fetch still means failure for 4xx/5xx (e.g. the worker
+      // rejecting a bad payload); only 2xx counts as delivered.
+      return Boolean(response && response.ok);
     } catch {
       // Swallow everything — telemetry must never surface an error to the user.
       return false;

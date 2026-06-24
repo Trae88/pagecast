@@ -166,7 +166,7 @@ export PAGECAST_TELEMETRY=0
 export DO_NOT_TRACK=1
 ```
 
-Telemetry is automatically off in CI.
+Telemetry is automatically off in CI (unless explicitly re-enabled with `PAGECAST_TELEMETRY=1`).
 
 ## Development
 

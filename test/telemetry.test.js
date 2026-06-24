@@ -11,8 +11,10 @@ import {
   buildDataPoint,
   cleanAnonId,
   cleanCommand,
-  cleanField,
-  cleanSubcommand
+  cleanEnum,
+  cleanNodeVersion,
+  cleanSubcommand,
+  cleanVersion
 } from "../telemetry/worker.js";
 
 // --- resolveTelemetry precedence -------------------------------------------
@@ -149,31 +151,65 @@ test("createReporter swallows a throwing fetch", async () => {
   assert.equal(await reporter.record({ command: "serve" }), false);
 });
 
+test("createReporter treats a non-2xx response as failure", async () => {
+  const reporter = createReporter({
+    enabled: true,
+    fetchImpl: async () => ({ ok: false, status: 400 }),
+    env: {}
+  });
+  assert.equal(await reporter.record({ command: "publish" }), false);
+});
+
 // --- worker-side validation ------------------------------------------------
 
-test("worker rejects non-allowlisted commands and clamps junk fields", () => {
+test("worker rejects non-allowlisted commands and subcommands", () => {
   assert.equal(cleanCommand("publish"), "publish");
   assert.equal(cleanCommand("rm -rf /"), null);
   assert.equal(cleanSubcommand("pages", "deploy"), "deploy");
   assert.equal(cleanSubcommand("pages", "/etc/passwd"), "");
-  assert.equal(cleanField("/Users/secret/x").includes("/"), false);
   assert.equal(cleanAnonId("f19f950377663aeed589ffb4b5e5863c"), "f19f950377663aeed589ffb4b5e5863c");
   assert.equal(cleanAnonId("not-an-id"), "");
 });
 
-test("worker buildDataPoint sanitizes an attacker payload and rejects bad commands", () => {
+test("worker platform validators allowlist os/arch and shape version/node", () => {
+  const OS = ["darwin", "linux", "win32"];
+  assert.equal(cleanEnum("darwin", OS), "darwin");
+  assert.equal(cleanEnum("/Users/secret/x", OS), "");
+  assert.equal(cleanEnum("plan9", OS), "");
+  assert.equal(cleanVersion("0.1.6"), "0.1.6");
+  assert.equal(cleanVersion("1.2.3-beta.1"), "1.2.3-beta.1");
+  assert.equal(cleanVersion("../../etc/passwd"), "");
+  assert.equal(cleanNodeVersion("v22.22.3"), "v22.22.3");
+  assert.equal(cleanNodeVersion("not-a-version"), "");
+});
+
+test("worker buildDataPoint rejects non-object payloads and bad commands", () => {
+  assert.equal(buildDataPoint(null), null); // JSON `null` body must not crash
+  assert.equal(buildDataPoint("publish"), null);
+  assert.equal(buildDataPoint(123), null);
   assert.equal(buildDataPoint({ command: "evil" }), null);
+});
+
+test("worker buildDataPoint drops arbitrary/attacker field values", () => {
   const dp = buildDataPoint({
     command: "publish",
     subcommand: "../../etc",
     os: "<script>alert(1)</script>",
+    arch: "'; DROP TABLE",
+    version: "9.9.9; rm -rf /",
+    node: "/etc/passwd",
     anonId: "'; DROP TABLE"
   });
   assert.deepEqual(dp.indexes, ["publish"]);
+  // blobs: [command, subcommand, outcome, version, os, arch, node, anonId]
+  assert.equal(dp.blobs[1], ""); // subcommand not allowlisted
+  assert.equal(dp.blobs[3], ""); // version not semver-shaped
+  assert.equal(dp.blobs[4], ""); // os not in allowlist
+  assert.equal(dp.blobs[5], ""); // arch not in allowlist
+  assert.equal(dp.blobs[6], ""); // node not version-shaped
+  assert.equal(dp.blobs[7], ""); // anonId not 32-hex
   const serialized = JSON.stringify(dp);
   assert.ok(!serialized.includes("<"));
-  assert.ok(!serialized.includes("/"));
   assert.ok(!serialized.includes("DROP TABLE"));
-  // subcommand not in the allowlist for this command is dropped to "".
-  assert.equal(dp.blobs[1], "");
+  assert.ok(!serialized.includes("passwd"));
 });

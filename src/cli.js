@@ -595,10 +595,17 @@ async function telemetry(args) {
     await store.setTelemetry(next);
     // An explicit choice counts as acknowledging the notice.
     await store.markTelemetryNotified();
+    // Report the EFFECTIVE state, not just the saved preference: env settings
+    // (DO_NOT_TRACK / PAGECAST_TELEMETRY / CI) can still override it, so a bare
+    // "enabled" could contradict what `telemetry status` reports next.
+    const { enabled, reason } = resolveTelemetry({ configEnabled: next, env: process.env });
     if (json) {
-      console.log(JSON.stringify({ ok: true, telemetry: { configEnabled: next } }));
+      console.log(JSON.stringify({ ok: true, telemetry: { configEnabled: next, enabled, reason } }));
     } else {
-      console.log(`Telemetry ${next ? "enabled" : "disabled"}.`);
+      console.log(`Telemetry preference saved: ${next ? "enabled" : "disabled"}.`);
+      if (enabled !== next) {
+        console.log(`Effective state: ${enabled ? "enabled" : "disabled"} (${reason} overrides the saved preference).`);
+      }
     }
     return;
   }

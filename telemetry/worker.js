@@ -35,6 +35,35 @@ const SUBCOMMAND_ALLOWLIST = {
   telemetry: ["status", "enable", "disable"]
 };
 const OUTCOME_ALLOWLIST = ["started", "success", "error"];
+// Node's os.platform() / os.arch() value sets — finite, so allowlist them to keep
+// the dataset low-cardinality (a public endpoint must not let callers store
+// arbitrary blobs).
+const OS_ALLOWLIST = [
+  "aix",
+  "android",
+  "cygwin",
+  "darwin",
+  "freebsd",
+  "linux",
+  "netbsd",
+  "openbsd",
+  "sunos",
+  "win32"
+];
+const ARCH_ALLOWLIST = [
+  "arm",
+  "arm64",
+  "ia32",
+  "loong64",
+  "mips",
+  "mipsel",
+  "ppc",
+  "ppc64",
+  "riscv64",
+  "s390",
+  "s390x",
+  "x64"
+];
 
 export function cleanCommand(value) {
   const v = String(value || "").trim().toLowerCase();
@@ -52,13 +81,24 @@ export function cleanOutcome(value) {
   return OUTCOME_ALLOWLIST.includes(v) ? v : "started";
 }
 
-// Coarse free-ish fields (version, os, arch, node). Clamp the character set and
-// length so they stay low-cardinality and can never carry a path or secret.
-export function cleanField(value, maxLen = 32) {
-  return String(value || "")
-    .trim()
-    .replace(/[^a-zA-Z0-9._-]/g, "")
-    .slice(0, maxLen);
+// Field-specific validators for the coarse platform fields. Anything that doesn't
+// match the expected shape is dropped to "" so a caller can't poison the dataset
+// with arbitrary high-cardinality strings.
+export function cleanEnum(value, allowlist) {
+  const v = String(value || "").trim().toLowerCase();
+  return allowlist.includes(v) ? v : "";
+}
+
+// Semver-ish (pagecast version): "1.2.3" with an optional prerelease/build tail.
+export function cleanVersion(value) {
+  const v = String(value || "").trim();
+  return /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:[-+][0-9A-Za-z.-]{1,24})?$/.test(v) ? v : "";
+}
+
+// Node version: "v22.22.3" (the leading "v" is optional).
+export function cleanNodeVersion(value) {
+  const v = String(value || "").trim();
+  return /^v?\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v) ? v : "";
 }
 
 // The anonymous install id is a 32-char hex string (16 random bytes). Anything
@@ -69,18 +109,22 @@ export function cleanAnonId(value) {
 }
 
 // Turn a raw client payload into an Analytics Engine data point, or null if the
-// command is not recognized (in which case the event is rejected).
+// payload isn't an object or the command is not recognized (event is rejected).
 export function buildDataPoint(payload = {}) {
+  // JSON `null`/`123`/`"x"` parse fine but aren't objects; guard before access.
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
   const command = cleanCommand(payload.command);
   if (!command) {
     return null;
   }
   const subcommand = cleanSubcommand(command, payload.subcommand);
   const outcome = cleanOutcome(payload.outcome);
-  const version = cleanField(payload.version);
-  const osName = cleanField(payload.os);
-  const arch = cleanField(payload.arch);
-  const node = cleanField(payload.node);
+  const version = cleanVersion(payload.version);
+  const osName = cleanEnum(payload.os, OS_ALLOWLIST);
+  const arch = cleanEnum(payload.arch, ARCH_ALLOWLIST);
+  const node = cleanNodeVersion(payload.node);
   const anonId = cleanAnonId(payload.anonId);
   return {
     // indexes: max 1, used for sampling/grouping. Keep it the command name.
