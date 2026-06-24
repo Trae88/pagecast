@@ -23,11 +23,17 @@ RUN npm install --global --no-audit --no-fund "wrangler@${WRANGLER_VERSION}" \
 WORKDIR /app
 
 # pagecast has zero runtime npm dependencies, so there is nothing to `npm install`
-# for the app itself — copy only the files the CLI needs at runtime.
-COPY package.json llms.txt ./
-COPY src/ ./src/
-COPY public/ ./public/
-COPY feedback/ ./feedback/
+# for the app itself — copy only the files the CLI needs at runtime. Own them as
+# the unprivileged `node` user (uid 1000, shipped with the base image).
+COPY --chown=node:node package.json llms.txt ./
+COPY --chown=node:node src/ ./src/
+COPY --chown=node:node public/ ./public/
+COPY --chown=node:node feedback/ ./feedback/
+
+# Pre-create the state dir and hand /app to `node` so the unprivileged process
+# can write .pagecast when no volume is mounted (and with a named volume, which
+# inherits this ownership). A bind mount uses the host dir's ownership instead.
+RUN mkdir -p /app/.pagecast && chown -R node:node /app
 
 # Inside a container the servers must listen on all interfaces for Docker port
 # mapping to reach them; outside Docker the default stays 127.0.0.1. ALWAYS map
@@ -44,6 +50,11 @@ EXPOSE 4173 4174
 # so the slim image needs no curl/wget.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://127.0.0.1:'+(process.env.PORT||4173)+'/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+
+# Drop root: the admin API is unauthenticated and can run shell commands, so the
+# runtime process runs as the unprivileged `node` user. Ports 4173/4174 are
+# >1024, so no privilege is needed to bind them.
+USER node
 
 # Absolute path so the CLI works even when callers override the working dir,
 # e.g. `docker run -v "$PWD:/work" -w /work pagecast publish ./report.html`.

@@ -4979,10 +4979,16 @@ export async function startServers({
     watchManager.register(report.id);
   }
 
+  // `host` may be a wildcard bind address (0.0.0.0 / ::) — correct for listen(),
+  // but invalid as a hostname in client-facing URLs (browsers, incl. Chrome
+  // 128+, refuse to connect to 0.0.0.0). Hand back a loopback display host for
+  // the URLs that reach the admin UI and the terminal.
+  const urlHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+
   const publicServer = createServer(createPublicHandler({ store }));
   await listen(publicServer, { host, port: publicPort });
   const actualPublicPort = publicServer.address().port;
-  const localPublicBaseUrl = `http://${host}:${actualPublicPort}`;
+  const localPublicBaseUrl = `http://${urlHost}:${actualPublicPort}`;
   let adminBaseUrl = null;
   const tunnelManager = new TunnelManager({
     localUrl: localPublicBaseUrl,
@@ -5014,7 +5020,7 @@ export async function startServers({
   }
 
   const actualAdminPort = adminServer.address().port;
-  const adminUrl = `http://${host}:${actualAdminPort}`;
+  const adminUrl = `http://${urlHost}:${actualAdminPort}`;
   adminBaseUrl = adminUrl;
 
   return {
