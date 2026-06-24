@@ -780,9 +780,15 @@ function PageWorkspace({
   const isProtected = report?.passwordProtected ?? false;
 
   // Collapse the draft whenever the selected report or its protection changes.
+  // Also reset the publish-time choices: PageWorkspace is a single persistent
+  // instance (not keyed by report id), so without this `publishAsDrop` would
+  // leak across report switches and a later "Publish drop" could mark the wrong
+  // report as a guessable drop.
   useEffect(() => {
     setPasswordDraftOpen(false);
     setPasswordDraft("");
+    setPublishAsDrop(false);
+    setAdvancedOpen(false);
   }, [reportId, isProtected]);
 
   if (isLoading) {

@@ -2674,9 +2674,23 @@ export function createReportStore({
     const takenNames = new Set();
     for (const existing of reports.values()) {
       for (const publication of existing.publications || []) {
-        const slug = publication.slug || publication.token;
-        takenNames.add(slug);
-        takenNames.add(publicTokenNamePrefix(slug));
+        // Reserve the token AND the slug (and their name prefixes). A renamed
+        // publication keeps its original `token` as its identity even though the
+        // `slug` changed, so reserving only the slug would let the old token be
+        // reissued and break findPublication/revoke/sync.
+        const tokenName = publication.token;
+        const slugName = publication.slug || tokenName;
+        for (const name of [tokenName, slugName, publicTokenNamePrefix(tokenName), publicTokenNamePrefix(slugName)]) {
+          if (name) takenNames.add(name);
+        }
+      }
+    }
+    // Renamed slugs leave a /p/<old>/ redirect; reserve those too, since a new
+    // slug equal to an old redirect source would silently steal that route.
+    for (const entry of redirects) {
+      const fromMatch = /^\/p\/([^/]+)\/?$/.exec(entry.from);
+      if (fromMatch) {
+        takenNames.add(decodeURIComponent(fromMatch[1]));
       }
     }
     const token = createPublicToken((name) => takenNames.has(name), { drop: isDrop });

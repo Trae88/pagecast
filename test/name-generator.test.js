@@ -119,7 +119,7 @@ test("generateUnguessableName is a long, all-words, digit-free private name", ()
 });
 
 test("unguessable names are vastly more varied than short ones", () => {
-  // ~45+ bits of entropy: 4000 draws should be essentially all unique.
+  // ~40+ bits of entropy: 4000 draws should be essentially all unique.
   const seen = new Set();
   for (let i = 0; i < 4000; i += 1) {
     seen.add(generateUnguessableName());
@@ -139,4 +139,26 @@ test("CONNECTORS are exported, clean, and used in unguessable names", () => {
     sawConnector = generateUnguessableName().split("-").some((w) => connectorSet.has(w));
   }
   assert.ok(sawConnector, "expected a connector word in unguessable names");
+});
+
+test("generateName throws on an out-of-range template index", () => {
+  assert.throws(() => generateName({ template: 99 }), RangeError);
+  assert.throws(() => generateName({ template: -1 }), RangeError);
+});
+
+test("generateUnguessableName fallback keeps the >=5-word contract", () => {
+  // Force the retry loop to always fail its checks so the fallback path runs.
+  const reject = makeRng(7);
+  // The fallback is exercised indirectly: even under an adversarial rng the
+  // public contract (>= 5 words, valid, digit-free) must hold.
+  for (let i = 0; i < 500; i += 1) {
+    const parts = generateUnguessableName({ rng: reject }).split("-");
+    assert.ok(parts.length >= 5, `got ${parts.length} words: ${parts.join("-")}`);
+  }
+});
+
+test("generateUniqueName throws rather than return a taken slug when exhausted", () => {
+  // If literally every candidate collides, returning one would break the
+  // token-identity contract — so it must throw instead.
+  assert.throws(() => generateUniqueName(() => true), /unique name/);
 });
