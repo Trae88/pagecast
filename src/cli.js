@@ -2,10 +2,12 @@
 import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 import {
+  createConfigStore,
   deleteCloudflarePagesDeployment,
   deployCloudflarePagesSite,
   getCloudflarePagesStatus,
@@ -20,8 +22,10 @@ import {
   startServers,
   stopGoalProgress
 } from "./server.js";
+import { classifyCommand, createReporter, resolveTelemetry } from "./telemetry.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const packageVersion = createRequire(import.meta.url)("../package.json").version;
 // When invoked via npx, the package lives in the npm cache, so reports and config
 // must live in the user's working directory, not next to the installed code.
 const dataDir = path.join(process.cwd(), ".pagecast");
@@ -51,6 +55,43 @@ async function confirmPrompt(question) {
     return /^y(es)?$/i.test(answer.trim());
   } finally {
     rl.close();
+  }
+}
+
+// First-run notice (stderr, so it never pollutes --json stdout).
+function printTelemetryNotice() {
+  process.stderr.write(
+    [
+      "Pagecast collects anonymous usage stats (which command ran, version, OS) to guide development.",
+      "No file contents, paths, URLs, or account info are ever sent.",
+      "Opt out anytime: `pagecast telemetry disable`, or set PAGECAST_TELEMETRY=0 / DO_NOT_TRACK=1.",
+      ""
+    ].join("\n")
+  );
+}
+
+// Resolve telemetry settings, show the one-time notice, and return a reporter.
+// Always returns a usable reporter; any failure degrades to a silent no-op so
+// telemetry can never break or slow a command.
+async function setupTelemetry() {
+  const noop = { record: async () => false, enabled: false };
+  let store;
+  try {
+    store = createConfigStore({ dataDir });
+    await store.init();
+    const cfg = store.get();
+    const { enabled } = resolveTelemetry({ configEnabled: cfg.telemetry, env: process.env });
+    if (!enabled) {
+      return noop;
+    }
+    const anonId = cfg.telemetryId || (await store.ensureTelemetryId());
+    if (!cfg.telemetryNotified) {
+      printTelemetryNotice();
+      await store.markTelemetryNotified();
+    }
+    return createReporter({ enabled: true, version: packageVersion, anonId, env: process.env });
+  } catch {
+    return noop;
   }
 }
 
@@ -526,6 +567,47 @@ async function goal(args) {
   }
 }
 
+async function telemetry(args) {
+  const [subcommand, ...rest] = args;
+  const parsed = parseFlags(rest);
+  const json = wantsJson(parsed);
+  const store = createConfigStore({ dataDir });
+  await store.init();
+
+  if (!subcommand || subcommand === "status") {
+    const cfg = store.get();
+    const { enabled, reason } = resolveTelemetry({ configEnabled: cfg.telemetry, env: process.env });
+    if (json) {
+      console.log(
+        JSON.stringify({ ok: true, telemetry: { enabled, reason, configEnabled: cfg.telemetry } })
+      );
+    } else {
+      console.log(`Telemetry: ${enabled ? "enabled" : "disabled"} (${reason})`);
+      console.log(
+        "Toggle with `pagecast telemetry enable|disable`, or set PAGECAST_TELEMETRY=0 / DO_NOT_TRACK=1."
+      );
+    }
+    return;
+  }
+
+  if (subcommand === "enable" || subcommand === "disable") {
+    const next = subcommand === "enable";
+    await store.setTelemetry(next);
+    // An explicit choice counts as acknowledging the notice.
+    await store.markTelemetryNotified();
+    if (json) {
+      console.log(JSON.stringify({ ok: true, telemetry: { configEnabled: next } }));
+    } else {
+      console.log(`Telemetry ${next ? "enabled" : "disabled"}.`);
+    }
+    return;
+  }
+
+  console.error(`Unknown telemetry command: ${subcommand}\n`);
+  usage();
+  process.exit(1);
+}
+
 function usage() {
   console.log(
     [
@@ -546,13 +628,28 @@ function usage() {
       "  pagecast goal publish <file> [--slug goal] [--json]   Publish/update a live goal-progress page",
       "  pagecast goal status [--json]                         Show the current goal page",
       "  pagecast goal stop [--json]                           Take the goal page offline",
+      "  pagecast telemetry status [--json]                    Show anonymous-usage-telemetry state",
+      "  pagecast telemetry enable|disable                     Turn anonymous usage telemetry on/off",
       "  pagecast --help                                       Show this help"
     ].join("\n")
   );
 }
 
 async function run() {
-  const [command, ...rest] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  const [command, ...rest] = argv;
+
+  // The telemetry command manages its own state; don't emit an event for it
+  // (avoids phoning home on the very command used to opt out).
+  if (command === "telemetry") {
+    await telemetry(rest);
+    return;
+  }
+
+  // Anonymous, opt-out usage event for every other command. Fire-and-forget:
+  // never awaited, never throws, bounded by the reporter's own timeout.
+  const reporter = await setupTelemetry();
+  reporter.record(classifyCommand(argv)).catch(() => {});
 
   if (command === "--help" || command === "-h" || command === "help") {
     usage();

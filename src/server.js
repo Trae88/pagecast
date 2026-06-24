@@ -410,7 +410,18 @@ function normalizeConfig(config = {}) {
     authCookieSecret:
       typeof config.authCookieSecret === "string" && config.authCookieSecret
         ? config.authCookieSecret
-        : null
+        : null,
+    // Anonymous usage telemetry (which commands run, version, OS). On by default;
+    // opt out via `pagecast telemetry disable`, PAGECAST_TELEMETRY=0, or DO_NOT_TRACK=1.
+    telemetry: config.telemetry !== false,
+    // Opaque random install id (no PII). Generated lazily only when telemetry is
+    // enabled and about to send; stripped from any client-/CLI-facing config.
+    telemetryId:
+      typeof config.telemetryId === "string" && config.telemetryId
+        ? config.telemetryId
+        : null,
+    // Whether the one-time first-run telemetry notice has been shown.
+    telemetryNotified: config.telemetryNotified === true
   };
 }
 
@@ -1216,7 +1227,9 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
   // (it's served by /api/status and /api/config), or forged auth cookies become
   // possible. Strip it from anything client- or CLI-output-facing.
   function getPublicConfig() {
-    const { authCookieSecret, ...rest } = config;
+    // telemetryId is an internal anonymous id; like authCookieSecret it must never
+    // reach the browser or CLI JSON output. The `telemetry` boolean stays visible.
+    const { authCookieSecret, telemetryId, ...rest } = config;
     return structuredClone(rest);
   }
 
@@ -1238,7 +1251,10 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
       badge: config.badge,
       goal: config.goal,
       defaultExpiry: config.defaultExpiry,
-      authCookieSecret: config.authCookieSecret
+      authCookieSecret: config.authCookieSecret,
+      telemetry: config.telemetry,
+      telemetryId: config.telemetryId,
+      telemetryNotified: config.telemetryNotified
     });
     await save();
     return get();
@@ -1262,6 +1278,30 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
     return get();
   }
 
+  async function setTelemetry(enabled) {
+    config = normalizeConfig({ ...config, telemetry: enabled !== false });
+    await save();
+    return get();
+  }
+
+  // Generate the opaque anonymous install id once, on demand. Random and PII-free;
+  // only created when telemetry is enabled and about to send its first event.
+  async function ensureTelemetryId() {
+    if (!config.telemetryId) {
+      config = { ...config, telemetryId: randomBytes(16).toString("hex") };
+      await save();
+    }
+    return config.telemetryId;
+  }
+
+  async function markTelemetryNotified() {
+    if (!config.telemetryNotified) {
+      config = { ...config, telemetryNotified: true };
+      await save();
+    }
+    return get();
+  }
+
   async function updateFeedback(feedback) {
     config = normalizeConfig({
       pages: config.pages,
@@ -1269,6 +1309,9 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
       goal: config.goal,
       defaultExpiry: config.defaultExpiry,
       authCookieSecret: config.authCookieSecret,
+      telemetry: config.telemetry,
+      telemetryId: config.telemetryId,
+      telemetryNotified: config.telemetryNotified,
       feedback: feedback === null ? null : { ...(config.feedback || {}), ...feedback }
     });
     await save();
@@ -1280,6 +1323,9 @@ export function createConfigStore({ dataDir = path.join(PROJECT_ROOT, ".pagecast
     setBadge,
     setGoal,
     setDefaultExpiry,
+    setTelemetry,
+    ensureTelemetryId,
+    markTelemetryNotified,
     get,
     getPublicConfig,
     updatePages,
