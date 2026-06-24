@@ -4981,14 +4981,19 @@ export async function startServers({
 
   // `host` may be a wildcard bind address (0.0.0.0 / ::) — correct for listen(),
   // but invalid as a hostname in client-facing URLs (browsers, incl. Chrome
-  // 128+, refuse to connect to 0.0.0.0). Hand back a loopback display host for
-  // the URLs that reach the admin UI and the terminal.
+  // 128+, refuse to connect to 0.0.0.0). Map wildcard binds to a loopback host
+  // for the URLs we hand back to the admin UI and terminal, and for the admin
+  // host-header allowlist (so a wildcard bind doesn't make `Host: 0.0.0.0`
+  // trusted). `urlHost` stays unbracketed for the allowlist comparison;
+  // `hostForUrl` brackets IPv6 literals (e.g. ::1) so URLs stay well-formed:
+  // http://[::1]:4173, not http://::1:4173.
   const urlHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  const hostForUrl = urlHost.includes(":") ? `[${urlHost}]` : urlHost;
 
   const publicServer = createServer(createPublicHandler({ store }));
   await listen(publicServer, { host, port: publicPort });
   const actualPublicPort = publicServer.address().port;
-  const localPublicBaseUrl = `http://${urlHost}:${actualPublicPort}`;
+  const localPublicBaseUrl = `http://${hostForUrl}:${actualPublicPort}`;
   let adminBaseUrl = null;
   const tunnelManager = new TunnelManager({
     localUrl: localPublicBaseUrl,
@@ -5008,7 +5013,7 @@ export async function startServers({
       tunnelManager,
       deployQueue,
       watchManager,
-      bindHost: host
+      bindHost: urlHost
     })
   );
 
@@ -5020,7 +5025,7 @@ export async function startServers({
   }
 
   const actualAdminPort = adminServer.address().port;
-  const adminUrl = `http://${urlHost}:${actualAdminPort}`;
+  const adminUrl = `http://${hostForUrl}:${actualAdminPort}`;
   adminBaseUrl = adminUrl;
 
   return {
