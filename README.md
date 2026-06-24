@@ -158,7 +158,13 @@ Notes:
 
 - The admin API is unauthenticated and can run shell commands, so the container
   binds `0.0.0.0` internally but the compose file maps the ports to the host's
-  **loopback only** (`127.0.0.1`). Don't expose them on a routable interface.
+  **loopback only** (`127.0.0.1`). If you start `serve` with `docker run` instead
+  of compose, publish to loopback too — `-p 127.0.0.1:4173:4173`, never a bare
+  `-p 4173:4173`. Set `HOST` only to `127.0.0.1` or `0.0.0.0`, never a routable IP.
+- On Linux the container runs as uid 1000 (`node`); if a bind-mounted `./.pagecast`
+  isn't writable by that uid you'll get permission errors. `mkdir -p .pagecast`
+  before `compose up` (or `chown 1000:1000 .pagecast`) fixes it. Docker Desktop and
+  OrbStack handle this automatically.
 - `wrangler` is pinned and baked into the image, so deploys don't fetch it at
   runtime. Bump `WRANGLER_VERSION` in the `Dockerfile` to update it.
 
