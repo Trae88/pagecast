@@ -172,7 +172,8 @@ export function useDeleteReport() {
 export function usePublishSnapshot() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.publishSnapshot(id),
+    mutationFn: ({ id, drop }: { id: string; drop?: boolean }) =>
+      api.publishSnapshot(id, { drop }),
     onSuccess: (data: PublishResponse) => {
       toast.success("Page published.", {
         description: data.publication.publicUrl ?? undefined

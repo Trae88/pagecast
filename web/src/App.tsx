@@ -23,6 +23,7 @@ import {
   AlertCircle,
   Check,
   CheckCircle2,
+  ChevronDown,
   Cloud,
   Copy,
   ExternalLink,
@@ -36,9 +37,11 @@ import {
   Pencil,
   RefreshCw,
   Settings,
+  Settings2,
   Trash2,
   Upload,
-  WifiOff
+  WifiOff,
+  Zap
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
@@ -209,12 +212,12 @@ export function App() {
     setPublishSummary(null);
   };
 
-  const startPublish = (report: Report) => {
+  const startPublish = (report: Report, drop = false) => {
     const startedAt = Date.now();
     setPublishingReportId(report.id);
     setPublishStartedAt(startedAt);
     setPublishSummary(null);
-    publish.mutate(report.id, {
+    publish.mutate({ id: report.id, drop }, {
       onSuccess: (data) => {
         const elapsed = Date.now() - startedAt;
         setPublishSummary({
@@ -761,21 +764,31 @@ function PageWorkspace({
   onSetPassword: (report: Report, password: string, onSuccess: () => void) => void;
   onPreview: (report: Report) => void;
   onEdit: (report: Report) => void;
-  onPublish: (report: Report) => void;
+  onPublish: (report: Report, drop: boolean) => void;
   onConnect: () => void;
   onRequestDelete: (report: Report) => void;
   onRequestRevokeAll: (report: Report) => void;
 }) {
   const [passwordDraftOpen, setPasswordDraftOpen] = useState(false);
   const [passwordDraft, setPasswordDraft] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Publish-time choice: a "drop" gets a short, shareable (guessable) link;
+  // otherwise the link is long and hard to guess. Default off = private.
+  const [publishAsDrop, setPublishAsDrop] = useState(false);
 
   const reportId = report?.id ?? null;
   const isProtected = report?.passwordProtected ?? false;
 
   // Collapse the draft whenever the selected report or its protection changes.
+  // Also reset the publish-time choices: PageWorkspace is a single persistent
+  // instance (not keyed by report id), so without this `publishAsDrop` would
+  // leak across report switches and a later "Publish drop" could mark the wrong
+  // report as a guessable drop.
   useEffect(() => {
     setPasswordDraftOpen(false);
     setPasswordDraft("");
+    setPublishAsDrop(false);
+    setAdvancedOpen(false);
   }, [reportId, isProtected]);
 
   if (isLoading) {
@@ -892,7 +905,7 @@ function PageWorkspace({
             ) : (
               <Button
                 size="sm"
-                onClick={() => onPublish(report)}
+                onClick={() => onPublish(report, publishAsDrop)}
                 disabled={publishPending || buildPending}
               >
                 {isPublishingThisReport ? (
@@ -900,7 +913,7 @@ function PageWorkspace({
                 ) : (
                   <Cloud className="h-4 w-4" />
                 )}
-                Publish URL
+                {publishAsDrop ? "Publish drop" : "Publish URL"}
               </Button>
             )}
             <DropdownMenu>
@@ -967,76 +980,121 @@ function PageWorkspace({
             ) : null}
 
             <div className="space-y-3 rounded-lg border bg-muted/20 px-3 py-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="flex items-center gap-1.5 text-sm font-medium">
-                    Password protection
-                    {report.passwordProtected ? (
-                      <Lock className="h-3.5 w-3.5 text-muted-foreground" />
-                    ) : null}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {report.passwordProtected
-                      ? "Visitors must enter a password"
-                      : "Anyone with the link can view"}
-                  </p>
-                </div>
-                <Switch
-                  checked={report.passwordProtected || passwordDraftOpen}
-                  disabled={passwordProtectionPending}
-                  onCheckedChange={(enabled) => {
-                    if (enabled) {
-                      setPasswordDraft("");
-                      setPasswordDraftOpen(true);
-                      return;
-                    }
-                    setPasswordDraftOpen(false);
-                    onDisablePassword(report);
-                  }}
-                  aria-label="Toggle password protection"
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((open) => !open)}
+                className="flex w-full items-center justify-between"
+                aria-expanded={advancedOpen}
+              >
+                <span className="flex items-center gap-1.5 text-sm font-medium">
+                  <Settings2 className="h-4 w-4 text-muted-foreground" />
+                  Advanced
+                  {report.passwordProtected ? (
+                    <Lock className="h-3.5 w-3.5 text-muted-foreground" />
+                  ) : null}
+                </span>
+                <ChevronDown
+                  className={`h-4 w-4 text-muted-foreground transition-transform ${
+                    advancedOpen ? "rotate-180" : ""
+                  }`}
                 />
-              </div>
-              {passwordDraftOpen ? (
-                <div className="flex items-center gap-2">
-                  <Input
-                    autoFocus
-                    type="password"
-                    value={passwordDraft}
-                    onChange={(event) => setPasswordDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" && passwordDraft.trim()) {
-                        onSetPassword(report, passwordDraft.trim(), () => {
-                          setPasswordDraft("");
+              </button>
+
+              {advancedOpen ? (
+                <div className="space-y-4 pt-1">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="flex items-center gap-1.5 text-sm font-medium">
+                        <Zap className="h-3.5 w-3.5 text-muted-foreground" />
+                        Publish as a drop
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {publishAsDrop
+                          ? "Short, shareable link (e.g. /p/hollow-paperclip/) — easy to guess"
+                          : "Private: a long, hard-to-guess link"}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={publishAsDrop}
+                      onCheckedChange={setPublishAsDrop}
+                      aria-label="Publish as a drop"
+                    />
+                  </div>
+
+                  <div className="space-y-3 border-t pt-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="flex items-center gap-1.5 text-sm font-medium">
+                          Password protection
+                          {report.passwordProtected ? (
+                            <Lock className="h-3.5 w-3.5 text-muted-foreground" />
+                          ) : null}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {report.passwordProtected
+                            ? "Visitors must enter a password"
+                            : "Anyone with the link can view"}
+                        </p>
+                      </div>
+                      <Switch
+                        checked={report.passwordProtected || passwordDraftOpen}
+                        disabled={passwordProtectionPending}
+                        onCheckedChange={(enabled) => {
+                          if (enabled) {
+                            setPasswordDraft("");
+                            setPasswordDraftOpen(true);
+                            return;
+                          }
                           setPasswordDraftOpen(false);
-                        });
-                      }
-                      if (event.key === "Escape") {
-                        setPasswordDraftOpen(false);
-                        setPasswordDraft("");
-                      }
-                    }}
-                    className="h-8"
-                    placeholder="Set a password"
-                    disabled={passwordProtectionPending}
-                    aria-label="Password"
-                  />
-                  <Button
-                    size="sm"
-                    onClick={() =>
-                      onSetPassword(report, passwordDraft.trim(), () => {
-                        setPasswordDraft("");
-                        setPasswordDraftOpen(false);
-                      })
-                    }
-                    disabled={passwordProtectionPending || !passwordDraft.trim()}
-                  >
-                    {passwordProtectionPending ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Check className="h-4 w-4" />
-                    )}
-                    Set
-                  </Button>
+                          onDisablePassword(report);
+                        }}
+                        aria-label="Toggle password protection"
+                      />
+                    </div>
+                    {passwordDraftOpen ? (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          autoFocus
+                          type="password"
+                          value={passwordDraft}
+                          onChange={(event) => setPasswordDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" && passwordDraft.trim()) {
+                              onSetPassword(report, passwordDraft.trim(), () => {
+                                setPasswordDraft("");
+                                setPasswordDraftOpen(false);
+                              });
+                            }
+                            if (event.key === "Escape") {
+                              setPasswordDraftOpen(false);
+                              setPasswordDraft("");
+                            }
+                          }}
+                          className="h-8"
+                          placeholder="Set a password"
+                          disabled={passwordProtectionPending}
+                          aria-label="Password"
+                        />
+                        <Button
+                          size="sm"
+                          onClick={() =>
+                            onSetPassword(report, passwordDraft.trim(), () => {
+                              setPasswordDraft("");
+                              setPasswordDraftOpen(false);
+                            })
+                          }
+                          disabled={passwordProtectionPending || !passwordDraft.trim()}
+                        >
+                          {passwordProtectionPending ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Check className="h-4 w-4" />
+                          )}
+                          Set
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               ) : null}
             </div>

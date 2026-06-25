@@ -8,6 +8,9 @@ export interface Publication {
   slug: string;
   label: string;
   kind: PublicationKind;
+  // True when published as a public "drop": a short, memorable, guessable slug.
+  // False (default) means a long, hard-to-guess private slug.
+  drop: boolean;
   active: boolean;
   createdAt: string;
   updatedAt: string;

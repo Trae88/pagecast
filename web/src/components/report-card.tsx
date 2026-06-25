@@ -4,6 +4,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { motion } from "framer-motion";
 import {
   Check,
+  ChevronDown,
   Eye,
   GripVertical,
   Loader2,
@@ -11,8 +12,10 @@ import {
   MoreVertical,
   Pencil,
   RefreshCw,
+  Settings2,
   Trash2,
-  Upload
+  Upload,
+  Zap
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -71,6 +74,10 @@ export function ReportCard({ report, onPreview, onEdit }: ReportCardProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [passwordDraftOpen, setPasswordDraftOpen] = useState(false);
   const [passwordDraft, setPasswordDraft] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Publish-time choice: a "drop" gets a short, shareable (guessable) link;
+  // otherwise the link is long and hard to guess. Default off = private.
+  const [publishAsDrop, setPublishAsDrop] = useState(false);
 
   // Collapse the draft input whenever protection state changes underneath us.
   useEffect(() => {
@@ -185,11 +192,11 @@ export function ReportCard({ report, onPreview, onEdit }: ReportCardProps) {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
-                  onClick={() => publish.mutate(report.id)}
+                  onClick={() => publish.mutate({ id: report.id, drop: publishAsDrop })}
                   disabled={publish.isPending}
                 >
                   <RefreshCw className="h-4 w-4" />
-                  Publish now
+                  {publishAsDrop ? "Publish drop" : "Publish now"}
                 </DropdownMenuItem>
                 {hasActive ? (
                   <DropdownMenuItem
@@ -233,61 +240,107 @@ export function ReportCard({ report, onPreview, onEdit }: ReportCardProps) {
           </div>
         ) : null}
 
-        <div className="space-y-2 border-t px-3 py-2">
-          <div className="flex items-center justify-between">
-            <div className="flex flex-col">
-              <span className="flex items-center gap-1.5 text-xs font-medium">
-                Password protection
-                {report.passwordProtected ? (
-                  <Lock className="h-3 w-3 text-muted-foreground" />
-                ) : null}
-              </span>
-              <span className="text-[11px] text-muted-foreground">
-                {report.passwordProtected
-                  ? "Visitors must enter a password"
-                  : "Anyone with the link can view"}
-              </span>
-            </div>
-            <Switch
-              checked={report.passwordProtected || passwordDraftOpen}
-              disabled={passwordProtection.isPending}
-              onCheckedChange={handlePasswordToggle}
-              aria-label="Toggle password protection"
+        <div className="border-t">
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((open) => !open)}
+            className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium transition-colors hover:bg-accent/50"
+            aria-expanded={advancedOpen}
+          >
+            <span className="flex items-center gap-1.5">
+              <Settings2 className="h-3.5 w-3.5 text-muted-foreground" />
+              Advanced
+              {report.passwordProtected ? (
+                <Lock className="h-3 w-3 text-muted-foreground" />
+              ) : null}
+            </span>
+            <ChevronDown
+              className={cn(
+                "h-4 w-4 text-muted-foreground transition-transform",
+                advancedOpen && "rotate-180"
+              )}
             />
-          </div>
-          {passwordDraftOpen ? (
-            <div className="flex items-center gap-1.5">
-              <Input
-                autoFocus
-                type="password"
-                value={passwordDraft}
-                onChange={(event) => setPasswordDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") commitPassword();
-                  if (event.key === "Escape") {
-                    setPasswordDraftOpen(false);
-                    setPasswordDraft("");
-                  }
-                }}
-                className="h-7 text-xs"
-                placeholder="Set a password"
-                disabled={passwordProtection.isPending}
-                aria-label="Password"
-              />
-              <Button
-                size="icon"
-                variant="ghost"
-                className="h-7 w-7"
-                onClick={commitPassword}
-                disabled={passwordProtection.isPending || !passwordDraft.trim()}
-                aria-label="Set password"
-              >
-                {passwordProtection.isPending ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Check className="h-3.5 w-3.5" />
-                )}
-              </Button>
+          </button>
+
+          {advancedOpen ? (
+            <div className="space-y-3 px-3 pb-3">
+              <div className="flex items-center justify-between">
+                <div className="flex flex-col pr-2">
+                  <span className="flex items-center gap-1.5 text-xs font-medium">
+                    <Zap className="h-3 w-3 text-muted-foreground" />
+                    Publish as a drop
+                  </span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {publishAsDrop
+                      ? "Short, shareable link (e.g. /p/hollow-paperclip/) — easy to guess"
+                      : "Private: a long, hard-to-guess link"}
+                  </span>
+                </div>
+                <Switch
+                  checked={publishAsDrop}
+                  onCheckedChange={setPublishAsDrop}
+                  aria-label="Publish as a drop"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex flex-col pr-2">
+                    <span className="flex items-center gap-1.5 text-xs font-medium">
+                      Password protection
+                      {report.passwordProtected ? (
+                        <Lock className="h-3 w-3 text-muted-foreground" />
+                      ) : null}
+                    </span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {report.passwordProtected
+                        ? "Visitors must enter a password"
+                        : "Anyone with the link can view"}
+                    </span>
+                  </div>
+                  <Switch
+                    checked={report.passwordProtected || passwordDraftOpen}
+                    disabled={passwordProtection.isPending}
+                    onCheckedChange={handlePasswordToggle}
+                    aria-label="Toggle password protection"
+                  />
+                </div>
+                {passwordDraftOpen ? (
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      autoFocus
+                      type="password"
+                      value={passwordDraft}
+                      onChange={(event) => setPasswordDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") commitPassword();
+                        if (event.key === "Escape") {
+                          setPasswordDraftOpen(false);
+                          setPasswordDraft("");
+                        }
+                      }}
+                      className="h-7 text-xs"
+                      placeholder="Set a password"
+                      disabled={passwordProtection.isPending}
+                      aria-label="Password"
+                    />
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      onClick={commitPassword}
+                      disabled={passwordProtection.isPending || !passwordDraft.trim()}
+                      aria-label="Set password"
+                    >
+                      {passwordProtection.isPending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Check className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
             </div>
           ) : null}
         </div>
