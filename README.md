@@ -198,6 +198,24 @@ See [extension/README.md](extension/README.md).
   report's folder can become public if referenced — keep secrets out of it.
 - The Pages root publishes no report listing.
 
+## Telemetry
+
+Pagecast collects **anonymous** usage stats — which command ran, the pagecast/Node
+version, and OS/arch — to guide what gets built next. It never sends file
+contents, file paths, published URLs, or Cloudflare tokens/account IDs. A one-time
+notice prints on first run. See [PRIVACY.md](PRIVACY.md) for the exact fields.
+
+It's on by default; opt out anytime:
+
+```sh
+pagecast telemetry disable      # or: pagecast telemetry status
+# or set an env var (also respects the cross-tool DO_NOT_TRACK standard)
+export PAGECAST_TELEMETRY=0
+export DO_NOT_TRACK=1
+```
+
+Telemetry is automatically off in CI (unless explicitly re-enabled with `PAGECAST_TELEMETRY=1`).
+
 ## Development
 
 ```sh

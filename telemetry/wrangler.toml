@@ -1,0 +1,15 @@
+# Pagecast telemetry Worker — maintainer infrastructure.
+#
+# Deployed ONCE to the maintainer's own Cloudflare account to ingest anonymous
+# CLI usage events. This is NOT deployed to end-user accounts (unlike the feedback
+# Worker) and is NOT shipped in the npm package. See ./README.md for deploy steps.
+
+name = "pagecast-telemetry"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+workers_dev = true
+
+# Anonymous usage events are written here. Query via the Analytics Engine SQL API.
+[[analytics_engine_datasets]]
+binding = "PAGECAST_TELEMETRY"
+dataset = "pagecast_usage"
