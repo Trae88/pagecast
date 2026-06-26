@@ -54,8 +54,11 @@ npx pagecast pages setup --project pagecast
 ## Publish From The Terminal
 
 ```sh
-# An HTML or Markdown file → a /p/<token>/ link (sibling assets included)
+# An HTML or Markdown file → a memorable /p/<slug>/ link (sibling assets included)
 npx pagecast publish "/absolute/path/report.html" --json
+
+# Set an expiry — 7d, 12h, or never (default 30d)
+npx pagecast publish "/absolute/path/report.html" --expires 7d --json
 
 # A built static project → publish its entry file
 npm run build && npx pagecast publish "$(pwd)/dist/index.html" --json
@@ -64,9 +67,12 @@ npm run build && npx pagecast publish "$(pwd)/dist/index.html" --json
 npx pagecast pages deploy "$(pwd)/dist" --project pagecasthq --json
 ```
 
-Add `--json` for agents and CI. Use the admin UI for link renaming, re-sync,
-revoke, and build settings. Common errors: `statusCode 401` → run `pages setup`
-or connect Cloudflare; `statusCode 409` → pass `--account <id>`.
+Links use human-readable word-slugs (e.g. `/p/hollow-paperclip/`) and are long
+and hard to guess (private) by default; the admin UI's **Publish as a drop**
+toggle mints a short, shareable link instead. Add `--json` for agents and CI,
+and use the admin UI for link renaming, re-sync, revoke, and build settings.
+Common errors: `statusCode 401` → run `pages setup` or connect Cloudflare;
+`statusCode 409` → pass `--account <id>`.
 
 ## Password Protection
 
@@ -192,7 +198,7 @@ See [extension/README.md](extension/README.md).
 ## Security Model
 
 - Admin UI binds to `127.0.0.1`; draft previews are local-only.
-- Public access only through active `/p/<token>/` links; revoked tokens 404 after
+- Public access only through active `/p/<slug>/` links; revoked links 404 after
   the redeploy finishes.
 - Public routes reject directory traversal and hidden files. Sibling assets in a
   report's folder can become public if referenced — keep secrets out of it.

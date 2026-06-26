@@ -1,81 +1,135 @@
 ---
 name: publish-report
 description: Publish local HTML, Markdown, or built static web projects with Pagecast as shareable public URLs. Use whenever Codex creates or finishes an .html, .htm, .md, .markdown, or static build output that a person could share (a report, plan, doc, dashboard, or analysis) — proactively offer to publish it without being asked — and whenever the user asks to publish, share, make a public link for, or send a local report/doc/dashboard/web project from terminal, Codex CLI, or Codex desktop.
+version: 0.4.0
 ---
 
-# Publish With Pagecast
+# Publish with Pagecast
 
-## Overview
+Pagecast turns a local **HTML or Markdown** file (a report, plan, doc, or
+dashboard) into a shareable public URL backed by the user's Cloudflare Pages
+project. Use this skill to offer that at the right moment, then do it on a yes.
 
-Use Pagecast to turn a finished local artifact into a shareable public URL backed
-by the user's Cloudflare Pages project. Prefer `pagecast publish <file>` for
-reports, docs, and built entry files. Use `pagecast publish site <dir>` only when
-the user intentionally wants to deploy a whole static folder to a named
-Cloudflare Pages project.
+## When to offer
 
-Never publish without explicit confirmation. Publishing makes the selected
-artifact publicly reachable.
+**Default to offering.** Whenever you produce an `.html`/`.htm` or
+`.md`/`.markdown` file that a person could reasonably share, proactively offer to
+publish it — once, right after you finish making it. Do **not** wait to be asked,
+and do **not** stay silent because you are unsure whether it is "worth it." If it
+could be shared, offer.
 
-## Be Proactive
+This includes:
 
-**Default to offering.** Right after you create or finish a shareable file, offer
-once to publish it — do not wait for the user to ask, and do not stay silent
-because you are unsure it is "worth it." If it could be shared, offer. When it is
-borderline, offer anyway; the user can say no.
+- A report you generated — test/coverage/Lighthouse/Playwright output, a data
+  dashboard, an analysis, a "here's what I built/found" summary.
+- A written plan, proposal, design doc, spec, release notes, or doc.
+- A static web project that was just built, with a generated entry file such as
+  `dist/index.html`, `build/index.html`, `out/index.html`, or `public/index.html`.
+- Any time the user says "share", "publish", "make a link for", or "send" a doc.
 
-## What To Publish
+**The only files to skip** (don't offer): scratch/draft notes the user is clearly
+keeping private, source code, config files, secrets, and repo-meta files (README,
+CHANGELOG, CONTRIBUTING, LICENSE, AGENTS.md, CLAUDE.md, TODO/tasks), or anything
+under `node_modules`/`dist` build internals. When it is borderline, **offer** —
+the user can just say no.
 
-Proactively offer once for any shareable artifact you produce:
+Ask **at most once per file.** If the user declines or ignores the offer, drop it
+and don't re-ask for that file. Never nag across multiple turns.
 
-- HTML reports, dashboards, coverage reports, Playwright/Lighthouse output, or
-  static single-page mini apps.
-- Markdown reports, plans, docs, proposals, release notes, analyses, or summaries
-  meant to be read by someone else. (A plan you just finished can be shared too —
-  write it to a `.md` file first, then publish that path.)
-- Static web projects after they are built. Publish the generated entry file,
-  usually `dist/index.html`, `build/index.html`, `out/index.html`, or
-  `public/index.html`; Pagecast stages sibling assets from that output folder.
+## The one question to ask
 
-Only skip (do not offer) clearly non-shareable files: scratch/draft notes the
-user is keeping private, source files, repo metadata (README/CHANGELOG,
-AGENTS.md/CLAUDE.md), task files, secrets, config files, dependency/build
-folders, and hidden files.
+> "Want me to publish this with Pagecast? It'll create a shareable public link."
 
-## Confirmation
+Only on an explicit **yes** do you proceed. Publishing makes the file publicly
+reachable — **never publish without confirmation.**
 
-Ask one direct question before publishing:
+## How to publish
 
-```text
-Want me to publish this with Pagecast?
-```
-
-Proceed only after an explicit yes. If the user declines or ignores the offer,
-drop it and do not ask again for that artifact.
-
-## Headless CLI Workflow
-
-Resolve the target to an absolute path, then run:
+Run the headless CLI with the **absolute path** and `--json`:
 
 ```sh
-npx pagecast publish "/absolute/path/to/report-or-built-index.html" --json
+npx pagecast publish "/absolute/path/to/file.md" --json
 ```
 
-Markdown works too:
+(HTML and Markdown both work — Markdown is rendered to a clean page. If `pagecast`
+is installed globally/in the project, `pagecast publish "<path>" --json` is the same.)
+
+Published links use **memorable word-slugs** (e.g. `/p/hollow-paperclip/`) and are
+long and hard to guess (private) by default. The user can rename a link — or make a
+short, shareable "drop" link — from the `npx pagecast` app.
+
+### Publish options
+
+Add any of these to a `publish` command:
+
+- `--expires <7d|12h|never>` — edge-enforced link expiry (default 30d). The page
+  returns 410 once expired; `--expires never` keeps it live until revoked. The
+  result JSON reports `expiresAt` (or none when never).
+- `--password "<pw>"` — gate the page behind a password, enforced at the edge so
+  every file of a multi-file report is covered. `--no-password` removes protection.
+  The result JSON reports `passwordProtected: true`.
+- `--label "<name>"` — set the page's display name in the Pagecast app.
 
 ```sh
-npx pagecast publish "/absolute/path/to/report.md" --json
+npx pagecast publish "/absolute/path/to/report.html" --expires 7d --password "hunter2" --json
 ```
 
-For a web project that should get a new shareable `/p/<token>/` link:
+**Publishing a plan** (e.g. after plan mode): the plan lives in your context, not
+a file yet. If the user wants it shared, first write the plan markdown to a file
+(e.g. `./plan.md`), then publish that path. Don't overwrite an existing file the
+user cares about — pick a clear new name.
 
-1. Run the project's existing build command, such as `npm run build`, only if the
-   user expects the current project state to be published.
-2. Find the static output entry file, usually `dist/index.html`,
-   `build/index.html`, `out/index.html`, or `public/index.html`.
-3. Publish that entry file with `npx pagecast publish "<absolute-entry-path>" --json`.
+## Live goal / progress page
 
-If the user asks to deploy or update an entire static site/project rather than
-create a new share link, deploy the built folder directly:
+When you're working toward a **`/goal`** (a long autonomous run the user can't
+easily watch), the user often can't see what's happening. Proactively **offer
+once**:
+
+> "Want me to publish a live progress page for this goal? You'll get a public
+> link you can open anytime to see status and what's done."
+
+On an explicit **yes**:
+
+1. Write a `pagecast-goal.md` in the working dir with the goal, status, a
+   done/next checklist, and a one-line "latest", e.g.:
+   ```markdown
+   # <short goal title>
+
+   **Goal:** <the goal condition, in your own words>
+   **Status:** In progress · updated <time>
+   **Progress:** 3 / 8 steps
+
+   ## Done
+   - [x] <step>
+
+   ## Next
+   - [ ] <step>
+
+   ## Latest
+   <one line: what you just did / any blocker>
+   ```
+2. Run `npx pagecast goal publish "<abs path>/pagecast-goal.md" --json` and give
+   the user the returned `url`.
+3. **After each meaningful step**, rewrite `pagecast-goal.md` and re-run the
+   **same** `npx pagecast goal publish … --json` — it updates the **same URL** in
+   place (do NOT use plain `publish`, which mints a new link each time).
+4. When the goal is met, do a final update; optionally `npx pagecast goal stop`.
+
+There is one goal page per workspace. If a command reports `recreated: true`, the
+old link was gone and the URL changed — tell the user the new URL.
+
+## Static web projects
+
+For a static web project that should get a new shareable `/p/<slug>/` link, build
+first and publish the generated entry file:
+
+```sh
+npm run build
+npx pagecast publish "/absolute/path/to/dist/index.html" --json
+```
+
+If the user asks to deploy or update an entire static site/project, deploy the
+built folder directly to a named Cloudflare Pages project:
 
 ```sh
 npx pagecast publish site "/absolute/path/to/dist" --project "project-name" --branch main --json
@@ -88,26 +142,30 @@ npx pagecast pages deploy "/absolute/path/to/dist" --project "project-name" --js
 ```
 
 Use this instead of raw Wrangler commands like `npx wrangler pages deploy`.
-Direct site deploys replace the target Cloudflare Pages project contents, so do
-not guess the `--project`; use the user's named project or ask for it.
+Direct site deploys replace the target Pages project contents, so do not guess
+the `--project`; use the user's named project or ask for it.
 
-Parse stdout as JSON:
+## Reading the result
 
-- Success: `{ "ok": true, "url": "https://<project>.pages.dev/p/<token>/", ... }`
-  Return the `url` and mention that the user can rename, re-sync, or revoke it
-  from `npx pagecast`.
-- `401`: the user has not connected Cloudflare. Tell them to run
-  `npx pagecast pages setup` once, or run `npx pagecast` and click
-  **Connect Cloudflare**, then retry if they want.
-- `409`: multiple Cloudflare accounts are available. Tell them to run
-  `npx pagecast pages setup --account <account-id>` once, or run `npx pagecast`
-  and choose the account, then retry.
-- Other errors: relay the error concisely and do not claim success.
+Parse the JSON on stdout:
 
-## Cloudflare Pages Workflow
+- **Success** → `{ "ok": true, "url": "https://<project>.pages.dev/p/<slug>/", ... }`
+  - Give the user the `url`. Mention they can rename the URL, re-sync, or revoke it
+    from `npx pagecast`.
+- **Not signed in** → `{ "ok": false, "statusCode": 401, ... }`
+  - This is the one-time setup. Tell the user to run **`npx pagecast pages setup`**
+    once, or run **`npx pagecast`** and click **Connect Cloudflare**, then offer to
+    retry. After that, publishing is headless — a plain "yes" is enough every time.
+- **Multiple accounts** → `{ "ok": false, "statusCode": 409, ... }`
+  - Tell the user to run `npx pagecast pages setup --account <account-id>` once, or
+    run `npx pagecast` to pick which Cloudflare account to publish from, then retry.
+- **Any other error** → relay `error` concisely and offer to retry. Do not claim
+  success.
+
+## Cloudflare Pages commands
 
 Use these lower-level commands when the user explicitly asks about Cloudflare
-setup or project deployment:
+setup, status, project listing, or direct Pages deployment:
 
 ```sh
 npx pagecast pages setup --project "project-name" --json
@@ -119,48 +177,16 @@ npx pagecast pages deploy "/absolute/path/to/dist" --project "project-name" --br
 If the user does not specify a branch, omit `--branch`; Pagecast deploys to
 `main`.
 
-`pages deploy` is the Pagecast abstraction over `npx wrangler pages deploy`; it
-passes the account to Wrangler internally through `CLOUDFLARE_ACCOUNT_ID` when
-needed.
+## Codex usage notes
 
-## Live Goal / Progress Page
-
-When working toward a `/goal` (a long autonomous run the user can't easily watch),
-proactively offer once: "Want me to publish a live progress page you can check
-anytime?" On an explicit yes:
-
-1. Write a `pagecast-goal.md` with the goal, status, a done/next checklist, and a
-   one-line "latest".
-2. `npx pagecast goal publish "/abs/pagecast-goal.md" --json` → give the user the
-   `url`.
-3. After each meaningful step, rewrite the file and re-run the **same** command —
-   it updates the **same URL** in place. Do NOT use plain `publish` (mints a new
-   link). `npx pagecast goal stop` when done.
-
-One goal page per workspace; if a result has `recreated: true`, the URL changed —
-surface the new one.
-
-## App Workflow
-
-Use the app when the user needs to manage folders or existing links:
-
-```sh
-npx pagecast
-```
-
-The app opens at `http://127.0.0.1:4173` and supports:
-
-- Adding HTML/Markdown files.
-- Adding deployable static folders.
-- Adding source folders with an explicit build command and output directory.
-- Publishing, renaming, re-syncing, and revoking URLs.
-
-## Codex Usage Notes
-
-- From Codex CLI or desktop, run terminal commands in the user's current project
-  directory so `.pagecast/` config and publish history stay with that project.
-- Always use absolute paths in `pagecast publish` and `pagecast pages deploy`.
-- If the user asks only for a command, provide the command and any one-time setup
-  note instead of running it.
-- If the user asks Codex to publish, run the command after confirmation and
-  report the resulting URL or exact failure.
+- Always pass an **absolute** path (resolve relative paths against the cwd first).
+- Run terminal commands in the user's current project directory so the `.pagecast/`
+  config and publish history stay with that project.
+- The first publish auto-creates the user's Pages project — no manual setup beyond
+  the one-time Connect Cloudflare login.
+- If the user asks only for a command, provide the command (and any one-time setup
+  note) instead of running it. If they ask Codex to publish, run it after
+  confirmation and report the resulting URL or the exact failure.
+- To update a page **in place at the same URL**, the user can re-sync from the
+  Pagecast app; re-running `publish` mints a new link. Old links keep working until
+  revoked.
