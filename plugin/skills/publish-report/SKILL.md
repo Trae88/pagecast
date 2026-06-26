@@ -1,7 +1,7 @@
 ---
 name: publish-report
 description: Use right after an HTML or Markdown report, plan, doc, dashboard, or built static web project is created (or when the user wants to share one). Proactively offer to publish it with Pagecast as a shareable public link, then return the URL. Default to offering; only skip clearly internal/scratch files.
-version: 0.3.0
+version: 0.4.0
 ---
 
 # Publish with Pagecast
@@ -56,6 +56,26 @@ npx pagecast publish "/absolute/path/to/file.md" --json
 (HTML and Markdown both work — Markdown is rendered to a clean page. If `pagecast`
 is installed globally/in the project, `pagecast publish "<path>" --json` is the same.)
 
+Published links use **memorable word-slugs** (e.g. `/p/hollow-paperclip/`) and are
+long and hard to guess (private) by default. The user can rename a link — or make a
+short, shareable "drop" link — from the `npx pagecast` app.
+
+### Publish options
+
+Add any of these to a `publish` command:
+
+- `--expires <7d|12h|never>` — edge-enforced link expiry (default 30d). The page
+  returns 410 once expired; `--expires never` keeps it live until revoked. The
+  result JSON reports `expiresAt` (or none when never).
+- `--password "<pw>"` — gate the page behind a password, enforced at the edge so
+  every file of a multi-file report is covered. `--no-password` removes protection.
+  The result JSON reports `passwordProtected: true`.
+- `--label "<name>"` — set the page's display name in the Pagecast app.
+
+```sh
+npx pagecast publish "/absolute/path/to/report.html" --expires 7d --password "hunter2" --json
+```
+
 **Publishing a plan** (e.g. after plan mode): the plan lives in your context, not
 a file yet. If the user wants it shared, first write the plan markdown to a file
 (e.g. `./plan.md`), then publish that path. Don't overwrite an existing file the
@@ -100,7 +120,7 @@ On an explicit **yes**:
 There is one goal page per workspace. If a command reports `recreated: true`, the
 old link was gone and the URL changed — tell the user the new URL.
 
-For static web projects that should get a new shareable `/p/<token>/` link,
+For static web projects that should get a new shareable `/p/<slug>/` link,
 build first and publish the generated entry file:
 
 ```sh
@@ -127,7 +147,7 @@ the `--project`; use the user's named project or ask for it.
 
 Parse the JSON on stdout:
 
-- **Success** → `{ "ok": true, "url": "https://<project>.pages.dev/p/<token>/", ... }`
+- **Success** → `{ "ok": true, "url": "https://<project>.pages.dev/p/<slug>/", ... }`
   - Give the user the `url`. Offer to drop it into a PR/Slack message, and
     mention they can rename the URL, re-sync, or revoke it from `npx pagecast`.
 - **Not signed in** → `{ "ok": false, "statusCode": 401, ... }`
