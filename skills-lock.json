@@ -29,25 +29,25 @@
       "source": "heygen-com/hyperframes",
       "sourceType": "github",
       "skillPath": "skills/hyperframes/SKILL.md",
-      "computedHash": "5ab05a7a44c39c247de6647f6f74fd86934409c40a91875d9a237415a9caa5af"
+      "computedHash": "fce8f4fef53f34df39f8f358429e7296b35d2775ca68701604e377537810cf5f"
     },
     "hyperframes-cli": {
       "source": "heygen-com/hyperframes",
       "sourceType": "github",
       "skillPath": "skills/hyperframes-cli/SKILL.md",
-      "computedHash": "6272f5136a7ab54f274c13c767ef9942281c7fdd0ab9ca3067c2ccfb4be279e7"
+      "computedHash": "8fe3247821013feb1971f3292203c5d29a690775cefdc6dce2ffecd21d400f70"
     },
     "hyperframes-media": {
       "source": "heygen-com/hyperframes",
       "sourceType": "github",
       "skillPath": "skills/hyperframes-media/SKILL.md",
-      "computedHash": "d5c40907c9f52c39dc4a926a3c17fbc68c239a33f0821ee6f43ee7006b1d20ca"
+      "computedHash": "4e2e6049f88474d62af9ad78bfbff2e8d2d288072ff05afad44bb47a2151d5f4"
     },
     "hyperframes-registry": {
       "source": "heygen-com/hyperframes",
       "sourceType": "github",
       "skillPath": "skills/hyperframes-registry/SKILL.md",
-      "computedHash": "141fcd863a1a02117706712508e8b0df407c3d0ff36e5863123fa4ce2defd14d"
+      "computedHash": "a65dd053db01700a8c52ee2dd005807bb48962808b6dc32b59699561dea3eabd"
     },
     "lottie": {
       "source": "heygen-com/hyperframes",
@@ -59,7 +59,7 @@
       "source": "heygen-com/hyperframes",
       "sourceType": "github",
       "skillPath": "skills/remotion-to-hyperframes/SKILL.md",
-      "computedHash": "7bfa13c3a5baa27db840d1107b43db45c65a10f4c5c1e9fcafc861a462e6ca7e"
+      "computedHash": "3f5441e7d3b935d61e98d185c96555b51f9c5229b3a77b940765bd852aa0629f"
     },
     "tailwind": {
       "source": "heygen-com/hyperframes",
@@ -71,7 +71,7 @@
       "source": "diffusionstudio/lottie",
       "sourceType": "github",
       "skillPath": "skills/text-to-lottie/SKILL.md",
-      "computedHash": "c5a6f2bf9e6fd5efea2be93af6514292962f9244eaaa22edb4d5b08f543a5110"
+      "computedHash": "4cd924abfa684018fa84c8b02068a7f490ad5828b9823906054e747776a19bfb"
     },
     "three": {
       "source": "heygen-com/hyperframes",
