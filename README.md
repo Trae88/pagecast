@@ -235,6 +235,16 @@ The root CLI/server has no runtime npm dependencies. Layout: `src/` (CLI, server
 publisher), `public/` (built UI), `web/` (React source), `plugin/` +
 `.codex/skills/` (agent skills), `test/` (Node tests).
 
+Contributors using a coding agent can pull in the extra dev-tooling skills
+(video/animation authoring, etc.) pinned in `skills-lock.json`:
+
+```sh
+npx skills experimental_install   # restores the skills pinned in skills-lock.json
+```
+
+They land in `.agents/skills/` — gitignored, local-only, not part of the
+shipped product.
+
 ## Contributing
 
 Issues and pull requests are welcome.
