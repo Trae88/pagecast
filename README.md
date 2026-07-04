@@ -252,6 +252,17 @@ npx skills add diffusionstudio/lottie -a claude-code --copy -y -s text-to-lottie
 They land in `.agents/skills/` and `.claude/skills/` — gitignored, local-only, not part of the
 shipped product.
 
+`skills/skills-reap/SKILL.md` in this repo automates the whole maintenance
+cycle above (restore, prune entries that no longer resolve upstream, re-link,
+keep this section in sync) — copy it into your agent's project skills once:
+
+```sh
+cp -R skills/skills-reap .claude/skills/   # Claude Code; swap the dest dir for other agents
+```
+
+Then ask your agent to reap/refresh the pinned skills instead of running the
+steps by hand.
+
 ## Contributing
 
 Issues and pull requests are welcome.
