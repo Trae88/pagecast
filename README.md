@@ -236,17 +236,18 @@ publisher), `public/` (built UI), `web/` (React source), `plugin/` +
 `.codex/skills/` (agent skills), `test/` (Node tests).
 
 Contributors using a coding agent can pull in the extra dev-tooling skills
-(video/animation authoring, etc.) pinned in `skills-lock.json`. Restoring
-alone drops them into `.agents/skills/` but leaves them unlinked to any
-agent, so also `add` them with your agent name (e.g. `claude-code`,
+(video/animation authoring, etc.) pinned in `skills-lock.json`. This repo
+pins **every** skill each source repo publishes, not a curated subset.
+Restoring alone drops them into `.agents/skills/` but leaves them unlinked
+to any agent, so also `add` them with your agent name (e.g. `claude-code`,
 `cursor`, `codex`) to make them invocable:
 
 ```sh
-npx skills experimental_install   # restores the pins into .agents/skills/
+npx skills add heygen-com/hyperframes -s '*' --copy -y   # restores + refreshes pins into .agents/skills/
+npx skills add diffusionstudio/lottie -s '*' --copy -y
 
-npx skills add heygen-com/hyperframes -a claude-code --copy -y \
-  -s hyperframes hyperframes-cli hyperframes-media hyperframes-registry remotion-to-hyperframes
-npx skills add diffusionstudio/lottie -a claude-code --copy -y -s text-to-lottie
+npx skills add heygen-com/hyperframes -a claude-code --copy -y -s '*'
+npx skills add diffusionstudio/lottie -a claude-code --copy -y -s '*'
 ```
 
 They land in `.agents/skills/` and `.claude/skills/` — gitignored, local-only, not part of the
